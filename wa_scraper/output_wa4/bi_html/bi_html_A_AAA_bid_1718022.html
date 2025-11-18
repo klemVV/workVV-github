@@ -1,0 +1,431 @@
+<html class="fixed js flexbox flexboxlegacy csstransforms csstransforms3d no-overflowscrolling no-mobile-device custom-scroll ng-scope" ng-app="wacorpApp" style=""><!-- fixed sidebar-left-collapsed to fix an issue per TAS --><head><style type="text/css">@charset "UTF-8";[ng\:cloak],[ng-cloak],[data-ng-cloak],[x-ng-cloak],.ng-cloak,.x-ng-cloak,.ng-hide:not(.ng-hide-animate){display:none !important;}ng\:form{display:block;}.ng-animate-shim{visibility:hidden;}.ng-anchor{position:absolute;}</style>
+    <script async="" src="https://www.datadoghq-browser-agent.com/us3/v5/datadog-rum.js"></script><script async="" src="https://www.googletagmanager.com/gtag/js?id=G-7B08VE04WV"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+
+        gtag('config', 'G-7B08VE04WV');
+    </script>
+    <!-- Basic -->
+    <meta charset="UTF-8">
+
+    <title>Corporations and Charities System</title>
+    <meta name="keywords" content="CCFS">
+    <meta name="google" content="notranslate">
+    <meta name="description" content="Washington Corporations and Charities Filing System">
+    <meta name="author" content="pcctg.com">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <!-- Mobile Metas   -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <!-- Web Fonts  -->
+    <!-- Vendor CSS -->
+    <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.css">
+    <link rel="stylesheet" href="assets/vendor/font-awesome/css/font-awesome.css">
+    <link rel="stylesheet" href="assets/vendor/magnific-popup/magnific-popup.css">
+    <link rel="stylesheet" href="assets/vendor/jquery-ui/css/ui-lightness/jquery-ui-1.10.4.custom.css">
+    <link rel="stylesheet" href="assets/vendor/bootstrap-multiselect/bootstrap-multiselect.css">
+    <link rel="stylesheet" href="assets/vendor/morris/morris.css">
+    <link href="assets/css/jquery.fancybox.css" rel="stylesheet">
+    <link href="assets/css/toastr.css" rel="stylesheet">
+    <link href="assets/css/loading-bar.css?version=20251104.2" rel="stylesheet">
+    <link href="assets/css/jquery.fancybox.css" rel="stylesheet">
+    <link rel="stylesheet" href="assets/css/theme.css?version=20251104.2">
+    <link rel="stylesheet" href="assets/css/skins/default.css?version=20251104.2">
+    <link rel="stylesheet" href="assets/css/theme-custom.css">
+    <script src="assets/vendor/modernizr/modernizr.js?version=20251104.2"></script>
+    <link href="assets/css/progress-wizard.min.css" rel="stylesheet">
+    <link href="ng-app/directives/AutoComplete/autocomplete.css" rel="stylesheet">
+    <link href="assets/css/custom.css?version=20251104.2" rel="stylesheet">
+
+    <!--<link href="assets/css/treasure-overlay-spinner.min.css" rel="stylesheet" />-->
+    <style>
+        #loaderDiv {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 1100;
+            background-color: white;
+            opacity: .6;
+        }
+
+        .ajax-loader {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            margin-left: -32px; /* -1 * image width / 2 */
+            margin-top: -32px; /* -1 * image height / 2 */
+            display: block;
+        }
+    </style>
+
+    <script>
+        function printScreen(objreference) {
+            var contents = $(objreference).html();
+            var frame1 = $('<iframe />');
+            frame1[0].name = "frame1";
+            frame1.css({ "position": "absolute", "top": "-1000000px" });
+            $("body").append(frame1);
+            var frameDoc = frame1[0].contentWindow ? frame1[0].contentWindow : frame1[0].contentDocument.document ? frame1[0].contentDocument.document : frame1[0].contentDocument;
+            frameDoc.document.open();
+            //Create a new HTML document.
+            frameDoc.document.write('<html><head><title></title>');
+            frameDoc.document.write('</head><body>');
+            //Append the external CSS file.
+            frameDoc.document.write('<style>.bg-primary{text-align:left;}.div_header {text-transform: uppercase;font-size:22px;padding: 15px 0 4px 0; font-family: "arial";}.alignright{padding-top:6px;} .div_header{border-bottom:1px solid #000; margin-bottom:4px;}</style>');
+            //Append the DIV contents.
+            frameDoc.document.write(contents);
+            frameDoc.document.write('</body></html>');
+            frameDoc.document.close();
+            setTimeout(function () {
+                window.frames["frame1"].focus();
+                window.frames["frame1"].print();
+                frame1.remove();
+            }, 500);
+        }
+    </script>
+    <script src="apiURL.js"></script>
+<style type="text/css">.fancybox-margin{margin-right:0px;}</style></head>
+
+<body>
+    <script>
+        (function (h, o, u, n, d) {
+            h = h[d] = h[d] || { q: [], onReady: function (c) { h.q.push(c) } }
+            d = o.createElement(u); d.async = 1; d.src = n
+            n = o.getElementsByTagName(u)[0]; n.parentNode.insertBefore(d, n)
+        })(window, document, 'script', 'https://www.datadoghq-browser-agent.com/us3/v5/datadog-rum.js', 'DD_RUM')
+        window.DD_RUM.onReady(function () {
+            window.DD_RUM.init({
+                clientToken: window.aPIURL.clientToken,
+                applicationId: window.aPIURL.applicationId,
+                site: 'us3.datadoghq.com',
+                service: 'ccfs-online',
+                env: window.aPIURL.env + '-ccfs',
+                // Specify a version number to identify the deployed version of your application in Datadog
+                // version: '1.0.0',
+                sessionSampleRate: window.aPIURL.sessionSampleRate,
+                sessionReplaySampleRate: window.aPIURL.sessionReplaySampleRate,
+                trackUserInteractions: true,
+                trackResources: true,
+                trackLongTasks: true,
+                defaultPrivacyLevel: 'mask-user-input',
+                allowedTracingUrls: [window.aPIURL.serviceUrl]
+            });
+        })
+    </script>
+    <div ng-controller="rootController" ng-init="rootInit()" class="ng-scope">
+        <!-- ngInclude: undefined --><ng-include src="masterLayout()" class="ng-scope" style=""><style type="text/css" class="ng-scope">
+    body {
+        background: #fff !important;
+    }
+</style>
+
+<!-- start: page -->
+
+<!-- ngView:  --><div ng-view="" class="ng-scope" style=""><section class="content-body2 ng-scope">
+    <!-- ngInclude: undefined --><ng-include src="'ng-app/view/layout/topBar.html'" class="ng-scope"><!-- start: header -->
+
+<header class="header ng-scope">
+    <div class="logo-container">
+        <div class="logo">
+            <a ng-click="redirect();"><img class="pull-left" src="assets/images/seal.png" alt="Washington" height="54" title="Dashboard"></a>
+            <div class="col-md-6">
+                <h3>Corporations and Charities Filing System</h3>
+            </div>
+
+            <div class="col-md-4 right-label">
+                <!-- TFS#2607; revamped banner; JS below determines visibility, content -->
+                <br>
+                <label id="lblDebugBanner" style="color:red; font-size:x-large;font-weight:bold"></label>
+            </div>
+           
+        </div>
+        <div class="visible-xs toggle-sidebar-left" data-toggle-class="sidebar-left-opened" data-target="html" data-fire-event="sidebar-left-opened">
+            <i class="fa fa-bars" aria-label="Toggle sidebar"></i>
+        </div>
+    </div>
+
+    <!-- start: search & user box -->
+    <div class="header-right ng-hide" ng-show="userData.isUserLoggedIn">
+
+        <!--<span class="separator"></span>-->
+
+        <div id="userbox" class="userbox">
+            <div class="cart"><a ng-href="#/shoppingCart" title="Shopping Cart" href="#/shoppingCart"><i class="fa fa-shopping-cart"></i></a></div>
+            <div data-toggle="dropdown">
+                <div class="profile-info">
+                    <span class="name">Welcome!</span>
+                    <span class="role ng-binding"></span>
+                </div>
+                <span style="cursor: pointer" role="menuitem" tabindex="-1" ng-click="logout();" class="name logout" href="#"><i class="fa fa-power-off name"></i> Logout</span>
+            </div>
+
+            <div class="dropdown-menu">
+                <ul class="list-unstyled">
+                    <li class="divider">
+                        <a role="menuitem" tabindex="-1" ng-click="navChangeAccount();"><i class="fa fa-power-off"></i> Change Account Details</a>
+                    </li>
+                    <li>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <!-- end: search & user box -->
+</header>
+
+<!-- end: header -->
+
+<!-- TFS#2607; add banners that will change automatically with host (server/connection) name -->
+<script type="text/javascript" class="ng-scope">
+    $(function () {
+        var xxx = window.location.hostname;
+        
+        if (xxx.indexOf("ccfs.sos") != -1) {
+            $('#debugBanner').css('visibility', 'hidden');
+        } else if (xxx.indexOf('ts-ccfs') != -1) {
+            $('#debugBanner').css('visibility', 'visible');
+            $('#lblDebugBanner').html("* P R E - P R O D *");
+        } else if (xxx.indexOf("localhost") != -1) {
+            $('#debugBanner').css('visibility', 'visible');
+            $('#lblDebugBanner').html("* L O C A L *");
+        }
+    });
+</script></ng-include>
+    <div class="inner-wrapper">
+        <header class="page-header">
+            <h2>Business Information</h2>
+        </header>
+        <div class="ng-scope" ng-init="initBusinessSearch()" id="divmain">
+            <div class="panel-body" id="divBusinessInformation">
+                <div class="div_header">Business Information</div>
+                <div class="row-margin">
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Business Name:
+                        </div>
+                        <!-- ngIf: businessInfo.BusinessType.indexOf('FOREIGN')>-1 -->
+                        <!-- ngIf: !(businessInfo.BusinessType.indexOf('FOREIGN')>-1) --><div class="col-md-3 ng-scope" data-ng-if="!(businessInfo.BusinessType.indexOf('FOREIGN')&gt;-1)">
+                            <strong data-ng-bind="businessInfo.BusinessName" class="ng-binding"></strong>
+                        </div><!-- end ngIf: !(businessInfo.BusinessType.indexOf('FOREIGN')>-1) -->
+                        <div class="col-md-3 alignright">
+                            UBI Number:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="businessInfo.UBINumber" class="ng-binding"></strong>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Business Type:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="businessInfo.BusinessType" class="ng-binding"></strong>
+                        </div>
+
+                        <div class="col-md-3 alignright">
+                            Business Status:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="businessInfo.BusinessStatus | uppercase" class="ng-binding"></strong>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Principal Office Street Address:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="businessInfo.PrincipalOffice.PrincipalStreetAddress.StreetAddress1==''?'':businessInfo.PrincipalOffice.PrincipalStreetAddress.FullAddress" class="ng-binding"></strong>
+                        </div>
+                        <div class="col-md-3 alignright">
+                            Principal Office Mailing Address:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="(businessInfo.PrincipalOffice.PrincipalMailingAddress.StreetAddress1!='' || businessInfo.PrincipalOffice.PrincipalMailingAddress.Zip5!='')?businessInfo.PrincipalOffice.PrincipalMailingAddress.FullAddress:''" class="ng-binding"></strong>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Expiration Date:
+                        </div>
+                        <!-- ngIf: (businessInfo.BusinessType | uppercase)== 'NAME RESERVATION' || (businessInfo.BusinessType | uppercase)== 'FOREIGN NAME REGISTRATION' -->
+                        <!-- ngIf: (businessInfo.BusinessCategory | uppercase)== 'MISCELLANEOUS FILING' -->
+                        <!-- ngIf: (businessInfo.BusinessType | uppercase)!= 'NAME RESERVATION' && (businessInfo.BusinessType | uppercase)!= 'FOREIGN NAME REGISTRATION' && (businessInfo.BusinessCategory | uppercase)!= 'MISCELLANEOUS FILING' --><div class="col-md-3 ng-scope" data-ng-if="(businessInfo.BusinessType | uppercase)!= 'NAME RESERVATION' &amp;&amp; (businessInfo.BusinessType | uppercase)!= 'FOREIGN NAME REGISTRATION' &amp;&amp; (businessInfo.BusinessCategory | uppercase)!= 'MISCELLANEOUS FILING'">
+                            <strong data-ng-bind="(businessInfo.NextARDueDate | date:'MM/dd/yyyy')=='01/01/0001'?'':businessInfo.NextARDueDate|date:'MM/dd/yyyy'" class="ng-binding"></strong>
+                        </div><!-- end ngIf: (businessInfo.BusinessType | uppercase)!= 'NAME RESERVATION' && (businessInfo.BusinessType | uppercase)!= 'FOREIGN NAME REGISTRATION' && (businessInfo.BusinessCategory | uppercase)!= 'MISCELLANEOUS FILING' -->
+                        <!-- ngIf: businessInfo.BusinessType != null -->
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Formation/ Registration Date:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="(businessInfo.DateOfIncorporation | date:'MM/dd/yyyy')=='01/01/0001'?'':businessInfo.DateOfIncorporation| date:'MM/dd/yyyy'" class="ng-binding"></strong>
+                        </div>
+
+                        <div class="col-md-3 alignright">
+                            Period of Duration:
+                        </div>
+                        <div class="col-md-3">
+                            <strong ng-bind="(businessInfo.DurationExpireDate| date:'MM/dd/yyyy')=='01/01/0001' || businessInfo.DurationExpireDate==null|| businessInfo.DurationExpireDate==''?'PERPETUAL':businessInfo.DurationExpireDate| date:'MM/dd/yyyy'" class="ng-binding">PERPETUAL</strong>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-3 alignright">
+                            Inactive Date:
+                        </div>
+                        <div class="col-md-3">
+                            <strong data-ng-bind="(businessInfo.InActiveDate | date:'MM/dd/yyyy')=='01/01/0001'?'':businessInfo.InActiveDate| date:'MM/dd/yyyy'" class="ng-binding"></strong>
+                        </div>
+                        <div class="col-md-3 alignright">
+                            Nature of Business:
+                        </div>
+                        <div class="col-md-3">
+                            <!-- ngIf: businessInfo.BINAICSCodeDesc -->
+                        </div>
+                    </div>
+
+                    <!--for 13.7 adding additional flags GT-->
+                    <div class="row">
+                        <!-- ngIf: businessInfo.BusinessType != null -->
+                    </div>
+                    <!--ends here-->
+                </div>
+            </div>
+
+            <div class="clearfix"></div>
+            <!-- ngIf: businessInfo.BusinessTypeID!=47 && businessInfo.BusinessTypeID!=25 && businessInfo.BusinessTypeID!=43 --><div ng-if="businessInfo.BusinessTypeID!=47 &amp;&amp; businessInfo.BusinessTypeID!=25 &amp;&amp; businessInfo.BusinessTypeID!=43" class="ng-scope">
+                <!--47=NameReservation,25=ForeignNameRegistration-->
+                <div class="div_header"> Registered Agent Information</div>
+                <div class="row-margin">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="col-md-5 alignright">
+                                <!--<span data-ng-if="businessInfo.Agent.AgentType=='I'">
+                                Name:
+                            </span>
+                            <span data-ng-if="businessInfo.Agent.AgentType=='E'">
+                                Entity Name:
+                            </span>
+                            <span data-ng-if="businessInfo.Agent.AgentType=='O'">
+                                Office or Position:
+                            </span>-->
+                                <span>
+                                    Registered Agent Name:
+                                </span>
+                            </div>
+                            <!--<br />-->
+                            <div class="col-md-7">
+                                <!-- ngIf: businessInfo.Agent.AgentType=='I' -->
+                                <!-- ngIf: businessInfo.Agent.AgentType=='E' || businessInfo.Agent.AgentType=='O' -->
+                            </div>
+                        </div>
+                        <!--<div class="col-md-6" ng-show="businessInfo.Agent.AgentType=='E'">
+                        <div class="col-md-4 alignright">Entity Name:</div>
+                        <div class="col-md-8"> <b>{{ businessInfo.Agent.EntityName}}</b></div>
+                    </div>-->
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="col-md-5 alignright">Street Address:</div>
+                            <div class="col-md-7"> <strong data-ng-bind="businessInfo.Agent.StreetAddress.FullAddress | uppercase" class="ng-binding"></strong></div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="col-md-5 alignright">Mailing Address:</div>
+                                <div class="col-md-7"> <strong data-ng-bind="businessInfo.Agent.MailingAddress.FullAddress | uppercase" class="ng-binding"></strong></div>
+                            </div>
+                        </div>
+                    </div>
+                    <br>
+                </div>
+            </div><!-- end ngIf: businessInfo.BusinessTypeID!=47 && businessInfo.BusinessTypeID!=25 && businessInfo.BusinessTypeID!=43 -->
+            <!-- ngIf: businessInfo.BusinessTypeID==47 || businessInfo.BusinessTypeID==25 -->
+
+            <!--- Incorporator -->
+            <!--- Wa Profit Corporation, Wa Professional Service Corporation, Wa Social Purpose Corporation, Wa Non profit Corporation, Wa Non profit Professional Service Corporation -->
+            <!--<div ng-if="businessInfo.PrincipalsList.length > 0 && incorporatorCount">
+            <div data-ng-if="businessInfo.BusinessTypeID==86 || businessInfo.BusinessTypeID==85 || businessInfo.BusinessTypeID==90 || businessInfo.BusinessTypeID==73 || businessInfo.BusinessTypeID==74 ">
+                <div data-principal data-modal-name="'Incorporator'" data-section-name="'Incorporators'" data-note="false" data-principal-list="businessInfo.PrincipalsList"
+                     data-ng-model="businessInfo.PrincipalsList" data-is-review="true" data-is-formation="true"></div>
+            </div>
+        </div>-->
+            <!---  Executor -->
+            <!---  Wa Limited Liability Company, Wa Professional Limited Liability Company -->
+            <!--<div ng-if="businessInfo.PrincipalsList.length > 0 && executorCount">
+            <div data-ng-if="businessInfo.BusinessTypeID==65 || businessInfo.BusinessTypeID==79">
+                <div data-principal data-modal-name="'Executor'" data-section-name="'Executors'" data-note="false" data-principal-list="businessInfo.PrincipalsList"
+                     data-ng-model="businessInfo.PrincipalsList" data-is-review="true" data-is-formation="true"></div>
+            </div>
+        </div>-->
+            <!--- General Partner -->
+            <!---  Wa Limited Partnership, Wa Professional Limited Partnership, Wa Limited Liability Limited Partnership, Wa Professional Limited Liability Limited Partnership -->
+            <!--<div ng-if="businessInfo.PrincipalsList.length > 0 && generalPartnerCount">
+            <div data-ng-if="businessInfo.BusinessTypeID==69 || businessInfo.BusinessTypeID==77 || businessInfo.BusinessTypeID==67 || businessInfo.BusinessTypeID==75">
+                <div data-principal data-modal-name="'GeneralPartner'" data-section-name="'General Partners'" data-note="false" data-principal-list="businessInfo.PrincipalsList"
+                     data-ng-model="businessInfo.PrincipalsList" data-is-review="true" data-is-formation="true"></div>
+            </div>
+        </div>-->
+            <!-- Initial Board of Directors -->
+            <!--- Wa Non profit Corporation, Wa Non profit Professional Service Corporation -->
+            <!--<div ng-if="businessInfo.PrincipalsList.length > 0 && initialBoardOfDirectorCount">
+            <div data-ng-if="businessInfo.BusinessTypeID==73 || businessInfo.BusinessTypeID==74 ">
+                <div data-principal data-modal-name="'InitialBoardOfDirector'" data-section-name="'Initial Board of Directors'" data-note="false" data-principal-list="businessInfo.PrincipalsList"
+                     data-ng-model="businessInfo.PrincipalsList" data-is-review="true" data-is-formation="true"></div>
+            </div>
+        </div>-->
+
+            <!-- ngIf: businessInfo.PrincipalsList.length > 0 -->
+
+        </div>
+        <div>
+            <cf-turnstile class="ng-isolate-scope"><!-- ngIf: isTurnstileEnable --><div class="cf-turnstile ng-scope" ng-if="isTurnstileEnable"><div><input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-n0ajm_response"></div></div><!-- end ngIf: isTurnstileEnable --></cf-turnstile>
+        </div>
+        <div class="col-md-12">
+            <div class="col-md-2" data-ng-hide="isBackButtonHide">
+                <button ng-click="navBusinessSearch();" class="btn btnbgclr btn-md btn-back ng-scope">Back</button>
+            </div>
+            <!-- ngIf: isBackButtonHide -->
+            <div class="col-md-10 button">
+                <input type="button" id="btnFilingHistory" class="btn btn-success" value="Filing History" ng-click="navBusinessFilings()">
+                <input type="button" id="btnNameHistory" class="btn btn-success" value="Name History" ng-click="navBusinessNameHistory()">
+                <input type="button" id="btnPrint" class="btn btn-success" value="Print" onclick="printScreen('#divmain')">
+                <input type="button" id="btnReturnToSearch" class="btn btn-brown" value="Return to Business Search" data-ng-hide="isBackButtonHide" ng-click="businesssearchType=='AdvancedSearch'?navAdvancedSearch():(userData.isUserLoggedIn?navCorporationSearch():navHome())">
+                <!--<input type="button" id="btnNameHistory" class="btn btn-success" value="Name History" onclick="submitFormNameHistory(@Model.BusinessID)">
+            <input type="button" id="btnReturnToSearch" class="btn btn-brown" value="Return to Business Search" onclick="window.location.href='@Url.Action(" index", "BusinessSearch" )'">-->
+            </div>
+            <!--<div class="col-md-6 alignright">
+            <input type="button" id="btnReturnToSearch" class="btn btn-brown" value="Return to Business Search" ng-click="businesssearchType=='AdvancedSearch'?navAdvancedSearch():(userData.isUserLoggedIn?navCorporationSearch():navHome())">
+        </div>-->
+        </div>
+    </div>
+</section>
+</div>
+
+
+
+<!-- end: page --></ng-include>
+    </div>
+
+    <script type="text/javascript" src="bundles/vendor-js?version=20251104.2"></script>
+    <link href="assets/vendor/bootstrap-datepicker/css/datepicker3.css" rel="stylesheet">
+    <!-- application -->
+
+    <script type="text/javascript" src="bundles/ccfs-js?version=20251104.2"></script>
+
+    <link href="assets/css/ngDialog.min.css" rel="stylesheet">
+    <link href="assets/css/ngDialog-theme-default.min.css" rel="stylesheet">
+    <link href="assets/css/ngDialog-theme-plain.min.css" rel="stylesheet">
+
+    <!--<div id="loaderDiv" loader><img src="/assets/images/ajax-loader.gif" class="ajax-loader" /></div>-->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" defer=""></script>
+
+</body></html>

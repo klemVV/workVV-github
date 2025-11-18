@@ -1,0 +1,26 @@
+[
+  {
+    "BusinessID": 14152,
+    "UBINumber": "603 089 943",
+    "BusinessName": "AAC ATM & CREDIT CARD PROCESSING, LLC",
+    "BusinessStatus": "Active",
+    "BusinessType": "WA LIMITED LIABILITY COMPANY",
+    "BusinessInformationHTML": {
+      "business_name": null,
+      "ubi_number": null,
+      "business_type": null,
+      "business_status": null,
+      "principal_office_street": null,
+      "principal_office_mailing": null,
+      "expiration_date": null,
+      "jurisdiction": null,
+      "formation_date": null,
+      "duration": null,
+      "inactive_date": null,
+      "agent_name": null,
+      "agent_street": null,
+      "agent_mailing": null,
+      "governors": []
+    }
+  }
+]
