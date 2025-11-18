@@ -1,0 +1,21 @@
+# Make sure you are in the /Users/klemanroy/Github/workVV-github
+
+# For NEW REPO
+git init
+git add .
+git commit -m "first commit"
+git remote add origin git@github.com-work:klemVV/new-work-repo.git
+git push -u origin main
+
+
+# For the SAME REPO  (already cloned or already has .git/)
+git add .
+git commit -m "message something"
+git push
+
+
+# Or if the remote is missing (rare):
+
+git remote add origin git@github.com-work:klemVV/EXISTING_REPO_NAME.git
+
+
