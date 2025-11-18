@@ -1,0 +1,38 @@
+[
+  {
+    "keyword": "AAA",
+    "api_details_file": "output_wa3/api/wa_api_A_AAA.json",
+    "api_success": 155,
+    "api_failed": 0,
+    "details_success": 0,
+    "details_failed": 0,
+    "records_scraped": 155
+  },
+  {
+    "keyword": "AAB",
+    "api_details_file": "output_wa3/api/wa_api_A_AAB.json",
+    "api_success": 7,
+    "api_failed": 0,
+    "details_success": 0,
+    "details_failed": 0,
+    "records_scraped": 7
+  },
+  {
+    "keyword": "AAC",
+    "api_details_file": "output_wa3/api/wa_api_A_AAC.json",
+    "api_success": 10,
+    "api_failed": 0,
+    "details_success": 0,
+    "details_failed": 0,
+    "records_scraped": 10
+  },
+  {
+    "keyword": "AAD",
+    "api_details_file": "output_wa3/api/wa_api_A_AAD.json",
+    "api_success": 8,
+    "api_failed": 0,
+    "details_success": 0,
+    "details_failed": 0,
+    "records_scraped": 8
+  }
+]

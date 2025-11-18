@@ -1,0 +1,363 @@
+<html class="fixed js flexbox flexboxlegacy csstransforms csstransforms3d no-overflowscrolling no-mobile-device custom-scroll ng-scope" ng-app="wacorpApp" style=""><!-- fixed sidebar-left-collapsed to fix an issue per TAS --><head><style type="text/css">@charset "UTF-8";[ng\:cloak],[ng-cloak],[data-ng-cloak],[x-ng-cloak],.ng-cloak,.x-ng-cloak,.ng-hide:not(.ng-hide-animate){display:none !important;}ng\:form{display:block;}.ng-animate-shim{visibility:hidden;}.ng-anchor{position:absolute;}</style>
+    <script async="" src="https://www.datadoghq-browser-agent.com/us3/v5/datadog-rum.js"></script><script async="" src="https://www.googletagmanager.com/gtag/js?id=G-7B08VE04WV"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag() { dataLayer.push(arguments); }
+        gtag('js', new Date());
+
+        gtag('config', 'G-7B08VE04WV');
+    </script>
+    <!-- Basic -->
+    <meta charset="UTF-8">
+
+    <title>Corporations and Charities System</title>
+    <meta name="keywords" content="CCFS">
+    <meta name="google" content="notranslate">
+    <meta name="description" content="Washington Corporations and Charities Filing System">
+    <meta name="author" content="pcctg.com">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <!-- Mobile Metas   -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+    <!-- Web Fonts  -->
+    <!-- Vendor CSS -->
+    <link rel="stylesheet" href="assets/vendor/bootstrap/css/bootstrap.css">
+    <link rel="stylesheet" href="assets/vendor/font-awesome/css/font-awesome.css">
+    <link rel="stylesheet" href="assets/vendor/magnific-popup/magnific-popup.css">
+    <link rel="stylesheet" href="assets/vendor/jquery-ui/css/ui-lightness/jquery-ui-1.10.4.custom.css">
+    <link rel="stylesheet" href="assets/vendor/bootstrap-multiselect/bootstrap-multiselect.css">
+    <link rel="stylesheet" href="assets/vendor/morris/morris.css">
+    <link href="assets/css/jquery.fancybox.css" rel="stylesheet">
+    <link href="assets/css/toastr.css" rel="stylesheet">
+    <link href="assets/css/loading-bar.css?version=20251104.2" rel="stylesheet">
+    <link href="assets/css/jquery.fancybox.css" rel="stylesheet">
+    <link rel="stylesheet" href="assets/css/theme.css?version=20251104.2">
+    <link rel="stylesheet" href="assets/css/skins/default.css?version=20251104.2">
+    <link rel="stylesheet" href="assets/css/theme-custom.css">
+    <script src="assets/vendor/modernizr/modernizr.js?version=20251104.2"></script>
+    <link href="assets/css/progress-wizard.min.css" rel="stylesheet">
+    <link href="ng-app/directives/AutoComplete/autocomplete.css" rel="stylesheet">
+    <link href="assets/css/custom.css?version=20251104.2" rel="stylesheet">
+
+    <!--<link href="assets/css/treasure-overlay-spinner.min.css" rel="stylesheet" />-->
+    <style>
+        #loaderDiv {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
+            z-index: 1100;
+            background-color: white;
+            opacity: .6;
+        }
+
+        .ajax-loader {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            margin-left: -32px; /* -1 * image width / 2 */
+            margin-top: -32px; /* -1 * image height / 2 */
+            display: block;
+        }
+    </style>
+
+    <script>
+        function printScreen(objreference) {
+            var contents = $(objreference).html();
+            var frame1 = $('<iframe />');
+            frame1[0].name = "frame1";
+            frame1.css({ "position": "absolute", "top": "-1000000px" });
+            $("body").append(frame1);
+            var frameDoc = frame1[0].contentWindow ? frame1[0].contentWindow : frame1[0].contentDocument.document ? frame1[0].contentDocument.document : frame1[0].contentDocument;
+            frameDoc.document.open();
+            //Create a new HTML document.
+            frameDoc.document.write('<html><head><title></title>');
+            frameDoc.document.write('</head><body>');
+            //Append the external CSS file.
+            frameDoc.document.write('<style>.bg-primary{text-align:left;}.div_header {text-transform: uppercase;font-size:22px;padding: 15px 0 4px 0; font-family: "arial";}.alignright{padding-top:6px;} .div_header{border-bottom:1px solid #000; margin-bottom:4px;}</style>');
+            //Append the DIV contents.
+            frameDoc.document.write(contents);
+            frameDoc.document.write('</body></html>');
+            frameDoc.document.close();
+            setTimeout(function () {
+                window.frames["frame1"].focus();
+                window.frames["frame1"].print();
+                frame1.remove();
+            }, 500);
+        }
+    </script>
+    <script src="apiURL.js"></script>
+<style type="text/css">.fancybox-margin{margin-right:0px;}</style></head>
+
+<body>
+    <script>
+        (function (h, o, u, n, d) {
+            h = h[d] = h[d] || { q: [], onReady: function (c) { h.q.push(c) } }
+            d = o.createElement(u); d.async = 1; d.src = n
+            n = o.getElementsByTagName(u)[0]; n.parentNode.insertBefore(d, n)
+        })(window, document, 'script', 'https://www.datadoghq-browser-agent.com/us3/v5/datadog-rum.js', 'DD_RUM')
+        window.DD_RUM.onReady(function () {
+            window.DD_RUM.init({
+                clientToken: window.aPIURL.clientToken,
+                applicationId: window.aPIURL.applicationId,
+                site: 'us3.datadoghq.com',
+                service: 'ccfs-online',
+                env: window.aPIURL.env + '-ccfs',
+                // Specify a version number to identify the deployed version of your application in Datadog
+                // version: '1.0.0',
+                sessionSampleRate: window.aPIURL.sessionSampleRate,
+                sessionReplaySampleRate: window.aPIURL.sessionReplaySampleRate,
+                trackUserInteractions: true,
+                trackResources: true,
+                trackLongTasks: true,
+                defaultPrivacyLevel: 'mask-user-input',
+                allowedTracingUrls: [window.aPIURL.serviceUrl]
+            });
+        })
+    </script>
+    <div ng-controller="rootController" ng-init="rootInit()" class="ng-scope">
+        <!-- ngInclude: undefined --><ng-include src="masterLayout()" class="ng-scope" style=""><style type="text/css" class="ng-scope">
+    body {
+        background: #fff !important;
+    }
+</style>
+
+<!-- start: page -->
+
+<!-- ngView:  --><div ng-view="" class="ng-scope" style=""><section class="content-body2 ng-scope">
+    <div>
+        <!-- ngInclude: undefined --><ng-include src="'ng-app/view/layout/topBar.html'" class="ng-scope"><!-- start: header -->
+
+<header class="header ng-scope">
+    <div class="logo-container">
+        <div class="logo">
+            <a ng-click="redirect();"><img class="pull-left" src="assets/images/seal.png" alt="Washington" height="54" title="Dashboard"></a>
+            <div class="col-md-6">
+                <h3>Corporations and Charities Filing System</h3>
+            </div>
+
+            <div class="col-md-4 right-label">
+                <!-- TFS#2607; revamped banner; JS below determines visibility, content -->
+                <br>
+                <label id="lblDebugBanner" style="color:red; font-size:x-large;font-weight:bold"></label>
+            </div>
+           
+        </div>
+        <div class="visible-xs toggle-sidebar-left" data-toggle-class="sidebar-left-opened" data-target="html" data-fire-event="sidebar-left-opened">
+            <i class="fa fa-bars" aria-label="Toggle sidebar"></i>
+        </div>
+    </div>
+
+    <!-- start: search & user box -->
+    <div class="header-right ng-hide" ng-show="userData.isUserLoggedIn">
+
+        <!--<span class="separator"></span>-->
+
+        <div id="userbox" class="userbox">
+            <div class="cart"><a ng-href="#/shoppingCart" title="Shopping Cart" href="#/shoppingCart"><i class="fa fa-shopping-cart"></i></a></div>
+            <div data-toggle="dropdown">
+                <div class="profile-info">
+                    <span class="name">Welcome!</span>
+                    <span class="role ng-binding"></span>
+                </div>
+                <span style="cursor: pointer" role="menuitem" tabindex="-1" ng-click="logout();" class="name logout" href="#"><i class="fa fa-power-off name"></i> Logout</span>
+            </div>
+
+            <div class="dropdown-menu">
+                <ul class="list-unstyled">
+                    <li class="divider">
+                        <a role="menuitem" tabindex="-1" ng-click="navChangeAccount();"><i class="fa fa-power-off"></i> Change Account Details</a>
+                    </li>
+                    <li>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </div>
+    <!-- end: search & user box -->
+</header>
+
+<!-- end: header -->
+
+<!-- TFS#2607; add banners that will change automatically with host (server/connection) name -->
+<script type="text/javascript" class="ng-scope">
+    $(function () {
+        var xxx = window.location.hostname;
+        
+        if (xxx.indexOf("ccfs.sos") != -1) {
+            $('#debugBanner').css('visibility', 'hidden');
+        } else if (xxx.indexOf('ts-ccfs') != -1) {
+            $('#debugBanner').css('visibility', 'visible');
+            $('#lblDebugBanner').html("* P R E - P R O D *");
+        } else if (xxx.indexOf("localhost") != -1) {
+            $('#debugBanner').css('visibility', 'visible');
+            $('#lblDebugBanner').html("* L O C A L *");
+        }
+    });
+</script></ng-include>
+    </div>
+    <div class="inner-wrapper">
+        <header class="page-header">
+            <h2>Business Search</h2>
+        </header>
+        <div class="panel-body" ng-init="initBusinessSearch()">
+            <div class="div_container">
+                <div class="div_header">Business Search Results</div>
+                <div class="row-margin">
+                    <div class="row">
+                        <div class="col-md-12 table-responsive table-striped">
+                            <table class="table table-striped table-responsive">
+                                <thead>
+                                    <tr style="width:100%">
+                                        <td class="bg-primary" ng-click="search(page,'Entity Name')"><strong>Business Name</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'Entity Name' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'Entity Name' --></td>
+                                        <td class="bg-primary" ng-click="search(page,'UBI # ')" style="width:10%"><strong>UBI#</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'UBI # ' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'UBI # ' --></td>
+                                        <td class="bg-primary" ng-click="search(page,'Entity Type')"><strong>Business Type</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'Entity Type' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'Entity Type' --></td>
+                                        <td class="bg-primary" ng-click="search(page,'Address')"><strong>Principal Office Address</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'Address' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'Address' --></td>
+                                        <td class="bg-primary" ng-click="search(page,'Registered Agent Name')"><strong>Registered Agent Name</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'Registered Agent Name' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'Registered Agent Name' --></td>
+                                        <td class="bg-primary" ng-click="search(page,'Status')"><strong>Status</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'Status' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'Status' --></td>
+                                        <td class="bg-primary ng-hide" ng-click="search(page,'EIN')" ng-show="IsFEINEnabled" style=""><strong>Nonprofit EIN</strong><!-- ngIf: businesssearchcriteria.SortType == 'ASC'&&businesssearchcriteria.SortBy == 'EIN' --><!-- ngIf: businesssearchcriteria.SortType == 'DESC'&&businesssearchcriteria.SortBy == 'EIN' --></td>
+                                    </tr>
+                                </thead>
+                                <tbody ng-show="businessList.length  &gt; 0" class="" style="">
+
+                                    <!-- ngRepeat: business in businessList --><tr ng-repeat="business in businessList" class="ng-scope" style="">
+                                        <td>
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="showBusineInfo(business.BusinessID,business.BusinessType)">CARLOS AAA AUTO REPAIR LLC</a>
+                                        </td>
+                                        <td class="ng-binding">605 550 827</td>
+                                        <td class="ng-binding">WA LIMITED LIABILITY COMPANY</td>
+                                        <td class="ng-binding">11414 164TH AVE SE TRLR 25, RENTON, WA, 98059-6112, UNITED STATES</td>
+                                        <td class="ng-binding">CARLOS A ENRIQUEZ ALVIZURES</td>
+                                        <td class="ng-binding">ACTIVE</td>
+                                        <td ng-show="IsFEINEnabled" class="ng-hide">
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="seachFEINNo(business.FEINNo)"></a>
+                                        </td>
+                                    </tr><!-- end ngRepeat: business in businessList --><tr ng-repeat="business in businessList" class="ng-scope">
+                                        <td>
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="showBusineInfo(business.BusinessID,business.BusinessType)">GRADE AAA INVESTMENTS LLC</a>
+                                        </td>
+                                        <td class="ng-binding">604 665 374</td>
+                                        <td class="ng-binding">WA LIMITED LIABILITY COMPANY</td>
+                                        <td class="ng-binding">11911 NE 1ST ST STE 101, BELLEVUE, WA, 98005-3032, UNITED STATES</td>
+                                        <td class="ng-binding">GARDNER MORELLI</td>
+                                        <td class="ng-binding">ACTIVE</td>
+                                        <td ng-show="IsFEINEnabled" class="ng-hide">
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="seachFEINNo(business.FEINNo)"></a>
+                                        </td>
+                                    </tr><!-- end ngRepeat: business in businessList --><tr ng-repeat="business in businessList" class="ng-scope">
+                                        <td>
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="showBusineInfo(business.BusinessID,business.BusinessType)">THE AAA LIMITED PARTNERSHIP</a>
+                                        </td>
+                                        <td class="ng-binding">601 552 518</td>
+                                        <td class="ng-binding">WA LIMITED PARTNERSHIP</td>
+                                        <td class="ng-binding">18424 LAGO VISTA, RCHO SANTA FE, CA, 92067, UNITED STATES</td>
+                                        <td class="ng-binding">PACIFIC REGISTERED AGENTS, INC.</td>
+                                        <td class="ng-binding">ACTIVE</td>
+                                        <td ng-show="IsFEINEnabled" class="ng-hide">
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="seachFEINNo(business.FEINNo)"></a>
+                                        </td>
+                                    </tr><!-- end ngRepeat: business in businessList --><tr ng-repeat="business in businessList" class="ng-scope">
+                                        <td>
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="showBusineInfo(business.BusinessID,business.BusinessType)">TRIPLE AAA PAINTING SERVICES LLC CO</a>
+                                        </td>
+                                        <td class="ng-binding">603 044 261</td>
+                                        <td class="ng-binding">WA LIMITED LIABILITY COMPANY</td>
+                                        <td class="ng-binding">1046 BEACH AVE APT B, MARYSVILLE, WA, 98270-4286, UNITED STATES</td>
+                                        <td class="ng-binding">FRANCISCO MAGALLON</td>
+                                        <td class="ng-binding">ACTIVE</td>
+                                        <td ng-show="IsFEINEnabled" class="ng-hide">
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="seachFEINNo(business.FEINNo)"></a>
+                                        </td>
+                                    </tr><!-- end ngRepeat: business in businessList --><tr ng-repeat="business in businessList" class="ng-scope">
+                                        <td>
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="showBusineInfo(business.BusinessID,business.BusinessType)">USA AAA GROUP (WASHINGTON) CORP.</a>
+                                        </td>
+                                        <td class="ng-binding">603 280 702</td>
+                                        <td class="ng-binding">WA PROFIT CORPORATION</td>
+                                        <td class="ng-binding">5632 E MERCER WAY, MERCER ISLAND, WA, 98040-5123, UNITED STATES</td>
+                                        <td class="ng-binding">AMERICAN FAMILY LLC</td>
+                                        <td class="ng-binding">ACTIVE</td>
+                                        <td ng-show="IsFEINEnabled" class="ng-hide">
+                                            <a class="btn-link ng-binding" style="cursor:pointer" ng-click="seachFEINNo(business.FEINNo)"></a>
+                                        </td>
+                                    </tr><!-- end ngRepeat: business in businessList -->
+                                </tbody>
+                                <tbody ng-show="businessList.length  &lt;= 0" class="ng-hide">
+                                    <tr>
+                                        <td colspan="6">No Value Found.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="row">
+                                <div class="col-md-12">
+                                    <cf-turnstile class="ng-isolate-scope"><!-- ngIf: isTurnstileEnable --><div class="cf-turnstile ng-scope" ng-if="isTurnstileEnable"><div><input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-gtzxc_response" value="0.mi_9Ep5VDFtsdwVJzFEpkhFsY4Is7P3U6oAWm20elXAWLbyvjOWeJHwHdgFf3NQf5O8Aq23Ne68iDKIUrhV7o63_5NcvdRGzFUSU2p3v5k_hqeIXIAFYQOsW-td_PRiBb24E4-dLU0xtqaSGux0XJ9BSCAEA-zW7C9wOTtWa0Pn53bU3boiLpVA2fasQITMoslzDec4NsVIJShq83ohSAOfIlqSW32d_sdP_c8FUHNJlFRkpM-GeYt-AwDjYoVdu2n6XW8TrwwnIDuWc-nHHrqbrSDUKhOrCWFOLF4RwIzjf_TM_Bm56dsQkL2IN5IUBcBRIsIxoIJt8fRJ6AR3HNYsJVBLgC5XHFFQRYwBpYhCUpPuIYr7xz9GOAy7_ut5040tLZAzQpJNo6TIDVyh-mO1ZW5icHmiiGn1-x9INeKpJeFSX09wzSu6-dW7D8CheYf_iXmgvS6m-cJG9gkMW_2aGWkeedxuyg6oRlYnzGFktHMZioqrNa7HkwtZyhTnf1aoOrzFfuy6PqswxF51JT7Qge6ZFykUyQACakfgmyST3BErthlMhLq7_BLrN5Ng86x6O9LTMHQRqF2X7ScCdyjutDdBwBTg2LYid7EByTDMPya2mffQTm7d86d3-ojvKOzLfdhm-sjCTodGYIDqFS21MnYTf8hW5V-iWnwwMTse2uJwsTAa1R-dUp2wKN1wLJ-9HGmItesVT4U6RYvrU2lhVogpjjcdm-5oRbTQF8GXwfebia9_NFwFW8V8gI6lW-Dfo-US9wVX5sI7t_trv9DjA1vjNIlLcpGK3vVqvEnms-CWQUNbHEbZA70qguKfDIkUCyT-r0tWwNFBQHT-A0UMUY8yipyG8LNp2Ay1WB14oB-C9FSbipP-aRJU_qUwuq-v8T7J0kY9ZY5UiSxSRYSsnNKlv7_fLb4ww0xwvA8IlmrolJ0iHIndO2wAq9RiF.B0BODsq2btuV_SjG5crkKg.ec1773dafd540f5f2a2e21e61dba1a5dc31301201e7b5a8ce2a538086b9fffc7"></div></div><!-- end ngIf: isTurnstileEnable --></cf-turnstile>
+                                    <div page="page" custom-path="customPath" pages-count="pagesCount" total-count="totalCount" search-func="search(page)" style="margin:0 0 0 0; float:left;" class="ng-isolate-scope">
+    <div ng-hide="(!pagesCount || pagesCount &lt; 2)" style="display: inline;" class="">
+        <ul class="pagination pagination-sm">
+            <li><a ng-hide="page == 0" ng-click="search(0)" class="" style="">«</a></li>
+            <li><a ng-hide="page == 0" ng-click="search(page-1)" class="" style="">‹</a></li>
+            <!-- ngRepeat: n in range() --><li ng-repeat="n in range()" ng-class="{active: n == page}" class="ng-scope" style="">
+                <!-- ngIf: n != page --><a ng-click="search(n)" ng-if="n != page" class="ng-binding ng-scope" style="">5</a><!-- end ngIf: n != page -->
+                <!-- ngIf: n == page -->
+            </li><!-- end ngRepeat: n in range() --><li ng-repeat="n in range()" ng-class="{active: n == page}" class="ng-scope" style="">
+                <!-- ngIf: n != page --><a ng-click="search(n)" ng-if="n != page" class="ng-binding ng-scope" style="">6</a><!-- end ngIf: n != page -->
+                <!-- ngIf: n == page -->
+            </li><!-- end ngRepeat: n in range() --><li ng-repeat="n in range()" ng-class="{active: n == page}" class="ng-scope active" style="">
+                <!-- ngIf: n != page -->
+                <!-- ngIf: n == page --><span ng-if="n == page" class="ng-binding ng-scope" style="">7</span><!-- end ngIf: n == page -->
+            </li><!-- end ngRepeat: n in range() -->
+            <li><a ng-hide="page == pagesCount - 1" ng-click="search(pagePlus(1))" class="ng-hide" style="">›</a></li>
+            <li><a ng-hide="page == pagesCount - 1" ng-click="search(pagesCount - 1)" class="ng-hide" style="">»</a></li>
+        </ul>
+    </div>
+</div>
+                                    &nbsp;&nbsp; <span style="float:left;margin:1% 0 0 1%;" class="ng-binding"> Page 7 of 7, records 151 to 155 of 155</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div width="100%" class="pull-right" data-ng-show="businessList.length &gt; 0" style="">
+                            <!--<input class="btn btn-success btn-md" type="button"  ng-click="exportXLSServer()" value="Export">-->
+                            <!--<img alt="Export to CSV" src="../../../images/csv.png" style="margin-right:3px;margin-top:3px;cursor:pointer;" border="0" title="Export to CSV" ng-click="exportCSVServer()">-->
+                            <!--<i class="fa fa-file-text-o fa-lg" style="cursor:pointer" filename="'CFTResule'" params="businesssearchcriteria" url="CFTPublicSearch/GetCFPublicSearchListExport" title="Download" download-file ng-bind="'CFTResule'">-->
+                            <!--<span ng-bind="'CFTResule'"></span>-->
+                            <!-- ngIf: businesssearchType!='AdvancedSearch' -->
+                            <!-- ngIf: businesssearchType=='AdvancedSearch' --><div ng-if="businesssearchType=='AdvancedSearch'" class="ng-scope">
+                                <!--<img alt="Export to Word" src="../../../images/Word.png" style="margin-right:3px;margin-top:3px;cursor:pointer;" border="0" title="Export to Word" style="cursor:pointer" filename="'Business Search Result.Word'" params="businesssearchcriteria" url="BusinessSearch/GetAdvanceBusinessSearchListForOnlineCsvExport" title="Download" download-file>
+                                <img alt="Export to Excel" src="../../../images/excel.png" style="margin-right:3px;margin-top:3px;cursor:pointer;" border="0" title="Export to Excel" style="cursor:pointer" filename="'Business Search Result.excel'" params="businesssearchcriteria" url="BusinessSearch/GetAdvanceBusinessSearchListForOnlineWordExport" title="Download" download-file>-->
+                                <img alt="Export to CSV" src="../../../images/csv.png" style="margin-right:3px;margin-top:3px;cursor:pointer;" border="0" title="Export to CSV" filename="'Business Search Result.csv'" params="businesssearchcriteria" url="BusinessSearch/GetAdvanceBusinessSearchListForOnlineCsvExport" download-file="" class="ng-isolate-scope ng-scope" ng-click="downloadPdf()">
+                                <!--<img alt="Export to PDF" src="../../../images/pdf.png" style="margin-right:3px;margin-top:3px;cursor:pointer;" border="0" title="Export to PDF" style="cursor:pointer" filename="'Business Search Result.pdf'" params="businesssearchcriteria" url="BusinessSearch/GetAdvanceBusinessSearchListForOnlineCsvExport" title="Download" download-file>-->
+                            </div><!-- end ngIf: businesssearchType=='AdvancedSearch' -->
+                            
+                            <!--</i>-->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+      <div class="col-md-6">
+            <input type="button" id="btnReturnToSearch" class="btn btn-brown" value="Back" ng-click="businesssearchType=='AdvancedSearch'?navAdvancedSearch():(userData.isUserLoggedIn?navCorporationSearch():navHome())">
+        </div>
+    </div>
+</section>
+</div>
+
+
+
+<!-- end: page --></ng-include>
+    </div>
+
+    <script type="text/javascript" src="bundles/vendor-js?version=20251104.2"></script>
+    <link href="assets/vendor/bootstrap-datepicker/css/datepicker3.css" rel="stylesheet">
+    <!-- application -->
+
+    <script type="text/javascript" src="bundles/ccfs-js?version=20251104.2"></script>
+
+    <link href="assets/css/ngDialog.min.css" rel="stylesheet">
+    <link href="assets/css/ngDialog-theme-default.min.css" rel="stylesheet">
+    <link href="assets/css/ngDialog-theme-plain.min.css" rel="stylesheet">
+
+    <!--<div id="loaderDiv" loader><img src="/assets/images/ajax-loader.gif" class="ajax-loader" /></div>-->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" defer=""></script>
+
+</body></html>

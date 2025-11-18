@@ -4,11 +4,15 @@
 import json
 import re
 import sys
+import os
+from dotenv import load_dotenv
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 from seleniumbase import SB
 from selenium.common.exceptions import NoAlertPresentException
+
+load_dotenv()
 
 ADV_URL = "https://ccfs.sos.wa.gov/#/AdvancedSearch"
 API_DETAIL_URL = (
@@ -20,10 +24,8 @@ FETCH_API_DETAILS = True
 FETCH_BUSINESS_INFORMATION = False # call BusinessInformation per businessID
 
 # ------------ PROXY CONFIG (Webshare) ------------
-# Format from Webshare: 107.173.105.132:5819:wqogvbow:q289vvxtga8c
-# SeleniumBase expects: USER:PASS@IP:PORT
 USE_PROXY = False  # <-- set to True to actually use the Webshare proxy
-PROXY_URL = "http://wqogvbow:q289vvxtga8c@107.173.105.132:5819"
+PROXY_URL = os.getenv("WEBSHARE_PROXY")
 
 # Directory for keyword files (relative to this script)
 SCRIPT_DIR = Path(__file__).resolve().parent
