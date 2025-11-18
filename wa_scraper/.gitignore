@@ -1,1 +1,11 @@
 .env
+.csv
+/output
+/output
+/proxies
+/proxy
+proxies.txt
+/screenshots
+/screenshot
+/pdf_files
+/pdf_file
