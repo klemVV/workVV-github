@@ -1,6 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+Combined WA scraper:
+
+- Table results (HTML)  -> wa_results_<LETTER>.json
+- Angular businessList  -> output_wa_combined/api/wa_api_<LETTER>_<KEYWORD>.json
+- BusinessInformation   -> output_wa_combined/bi_html/wa_bi_<LETTER>_<KEYWORD>.json
+- Tracking (per letter) ->
+
+    wa_tracking_<LETTER>.json  (merged tracking per keyword: rows + API + BI)
+
+Usage:
+    python3 wa_search_sb_local21.py A
+"""
+
 import json
 import re
 import sys
@@ -181,7 +195,7 @@ def sanitize_for_filename(s: str) -> str:
 def ensure_advanced_search(sb) -> bool:
     """
     Make sure we're on the Advanced Search page with #txtOrgname visible.
-    If we're on the results page, click Back.
+    If we're on the results page, click its Back-to-search button.
     If that fails, reload ADV_URL.
     """
     try:
@@ -189,18 +203,18 @@ def ensure_advanced_search(sb) -> bool:
         if sb.is_element_present("#txtOrgname"):
             return True
 
-        # On results page? Use Back button
+        # On results page? Use ReturnToSearch button there
         if sb.is_element_present("#btnReturnToSearch"):
-            print("[NAV] Clicking Back to return to Advanced Search...")
+            print("[NAV] Clicking ReturnToSearch to go back to Advanced Search...")
             sb.click("#btnReturnToSearch")
-            sb.wait_for_element("#txtOrgname", timeout=15)
+            sb.wait_for_element("#txtOrgname", timeout=10)
             return True
 
         # Fallback: go directly to Advanced Search URL
-        print("[NAV] Neither #txtOrgname nor Back found; re-opening AdvancedSearch URL...")
+        print("[NAV] Neither #txtOrgname nor ReturnToSearch found; re-opening AdvancedSearch URL...")
         sb.open(ADV_URL)
         sb.sleep(2)
-        sb.wait_for_element("#txtOrgname", timeout=15)
+        sb.wait_for_element("#txtOrgname", timeout=10)
         return True
 
     except Exception as e:
@@ -288,37 +302,58 @@ def dismiss_any_alert(sb):
         print(f"[ALERT] Error while trying to handle alert: {e}")
 
 
-# ---------- NEW: BusinessInformation parsing helpers ----------
-def _value_next_to_label(root, label_text: str) -> str:
+def click_detail_back_button(sb) -> bool:
     """
-    Inside `root`, find a div whose text == label_text (trimmed),
-    then take the sibling col-md-3's <strong> text.
+    From the BusinessInformation view, click the *Back* button that goes
+    one level up to the results table (NOT the 'Return to Business Search').
+
+    Strategy:
+    - Look for any <button> or <a> whose visible text is exactly 'Back'
+    - Click the first match.
+    - If not found, fall back to #btnReturnToSearch, then history.back().
     """
-    if not root:
-        return ""
+    js_back = r"""
+var btns = document.querySelectorAll("button, a");
+for (var i = 0; i < btns.length; i++) {
+    var el = btns[i];
+    var text = (el.textContent || "").trim();
+    if (text === "Back") {
+        el.click();
+        return true;
+    }
+}
+return false;
+"""
+    try:
+        clicked = sb.execute_script(js_back)
+        if clicked:
+            print("[NAV] Clicked detail 'Back' button (one level up to results).")
+            return True
+    except Exception as e:
+        print(f"[NAV] JS error while trying to click detail 'Back' button: {e}")
 
-    label_div = root.find(
-        "div",
-        string=lambda s: s and s.strip() == label_text,
-    )
-    if not label_div:
-        return ""
+    # Fallback 1: ReturnToSearch (may jump further than we like but better than stuck)
+    try:
+        if sb.is_element_present("#btnReturnToSearch"):
+            print("[NAV] Fallback: clicking #btnReturnToSearch from details.")
+            sb.click("#btnReturnToSearch")
+            return True
+    except Exception as e:
+        print(f"[NAV] Error clicking #btnReturnToSearch fallback: {e}")
 
-    label_col = label_div.find_parent("div", class_="col-md-3")
-    if not label_col:
-        return ""
-    value_col = label_col.find_next_sibling("div", class_="col-md-3")
-    if not value_col:
-        return ""
-    strong = value_col.find("strong")
-    return strong.get_text(strip=True) if strong else value_col.get_text(strip=True).strip()
+    # Fallback 2: history.back()
+    try:
+        print("[NAV] Fallback: using window.history.back() from details.")
+        sb.execute_script("window.history.back();")
+        return True
+    except Exception as e:
+        print(f"[NAV] Error calling window.history.back(): {e}")
+
+    return False
 
 
+# ---------- Parse BusinessInformation HTML ----------
 def parse_business_information_html(html: str) -> dict:
-    """
-    Parse a single BusinessInformation HTML page into a structured dict.
-    This does NOT navigate; just parses the HTML you already have.
-    """
     soup = BeautifulSoup(html, "html.parser")
     info = {}
 
@@ -326,106 +361,118 @@ def parse_business_information_html(html: str) -> dict:
     if not main_div:
         return info
 
-    # Business Information fields
-    info["business_name"] = _value_next_to_label(main_div, "Business Name:")
-    info["ubi_number"] = _value_next_to_label(main_div, "UBI Number:")
-    info["business_type"] = _value_next_to_label(main_div, "Business Type:")
-    info["business_status"] = _value_next_to_label(main_div, "Business Status:")
+    def value_next_to_label(root, label_text: str):
+        """
+        Find a label with given text inside `root`, then return the text
+        of the next 'col-md-*' sibling (strong/b text if possible).
+        Works for both Business Info (col-md-3/3) and Agent block (col-md-5/7).
+        """
 
-    info["principal_office_street"] = _value_next_to_label(
-        main_div,
-        "Principal Office Street Address:",
-    )
-    info["principal_office_mailing"] = _value_next_to_label(
-        main_div,
-        "Principal Office Mailing Address:",
-    )
+        # Find any tag whose *text* matches the label (div or span)
+        label_tag = root.find(
+            lambda tag: tag.name in ("div", "span")
+            and isinstance(tag.string, str)
+            and tag.string.strip() == label_text
+        )
+        if not label_tag:
+            return None
 
-    info["expiration_date"] = _value_next_to_label(main_div, "Expiration Date:")
-    info["jurisdiction"] = _value_next_to_label(main_div, "Jurisdiction:")
-    info["formation_date"] = _value_next_to_label(
-        main_div,
-        "Formation/ Registration Date:",
-    )
-    info["duration"] = _value_next_to_label(main_div, "Period of Duration:")
-    info["inactive_date"] = _value_next_to_label(main_div, "Inactive Date:")
+        # Climb up to the nearest ancestor with a 'col-md-*' class
+        label_col = label_tag
+        while label_col and not any(
+            isinstance(label_col.get("class"), list)
+            and any(cls.startswith("col-md-") for cls in label_col.get("class"))
+            for _ in [0]
+        ):
+            label_col = label_col.parent
 
-    # Nature of Business
-    nature_label = main_div.find(
-        "div",
-        class_="col-md-3 alignright",
-        string=lambda s: s and "Nature of Business" in s,
-    )
-    nature_of_business = ""
-    if nature_label:
-        nb_container = nature_label.find_next_sibling("div", class_="col-md-3")
-        if nb_container:
-            strong = nb_container.find("strong")
-            if strong:
-                nature_of_business = strong.get_text(strip=True)
-            else:
-                nature_of_business = nb_container.get_text(strip=True)
-    info["nature_of_business"] = nature_of_business
+        if not label_col:
+            return None
 
-    # Registered Agent block
+        # Now find the next sibling div that also has a 'col-md-*' class
+        sib = label_col.find_next_sibling("div")
+        while sib and not (
+            isinstance(sib.get("class"), list)
+            and any(cls.startswith("col-md-") for cls in sib.get("class"))
+        ):
+            sib = sib.find_next_sibling("div")
+
+        if not sib:
+            return None
+
+        # Prefer <strong> or <b>, fall back to all text
+        strong = sib.find("strong")
+        if strong:
+            return strong.get_text(strip=True)
+        btag = sib.find("b")
+        if btag:
+            return btag.get_text(strip=True)
+
+        text = sib.get_text(strip=True)
+        return text or None
+
+    # ---- Business Information fields (unchanged, but now use new helper) ----
+    info["business_name"] = value_next_to_label(main_div, "Business Name:")
+    info["ubi_number"] = value_next_to_label(main_div, "UBI Number:")
+    info["business_type"] = value_next_to_label(main_div, "Business Type:")
+    info["business_status"] = value_next_to_label(main_div, "Business Status:")
+    info["principal_office_street"] = value_next_to_label(
+        main_div, "Principal Office Street Address:"
+    )
+    info["principal_office_mailing"] = value_next_to_label(
+        main_div, "Principal Office Mailing Address:"
+    )
+    info["expiration_date"] = value_next_to_label(main_div, "Expiration Date:")
+    info["jurisdiction"] = value_next_to_label(main_div, "Jurisdiction:")
+    info["formation_date"] = value_next_to_label(
+        main_div, "Formation/ Registration Date:"
+    )
+    info["duration"] = value_next_to_label(main_div, "Period of Duration:")
+    info["business_nature"] = value_next_to_label(main_div, "Nature of Business:")
+    info["inactive_date"] = value_next_to_label(main_div, "Inactive Date:")
+
+    # ---- Registered Agent block (use same helper) ----
     agent_header = soup.find(
         "div",
         class_="div_header",
-        string=lambda s: s and "Registered Agent Information" in s,
+        string=lambda s: s and "Registered Agent Information" in s
     )
     if agent_header:
+        # The agent block is the enclosing ng-scope after that header
         agent_block = agent_header.find_parent("div", class_="ng-scope")
-    else:
-        agent_block = None
+        if agent_block:
+            info["agent_name"] = value_next_to_label(agent_block, "Registered Agent Name:")
+            info["agent_street"] = value_next_to_label(agent_block, "Street Address:")
+            info["agent_mailing"] = value_next_to_label(agent_block, "Mailing Address:")
 
-    if agent_block:
-        info["agent_name"] = _value_next_to_label(agent_block, "Registered Agent Name:")
-        info["agent_street"] = _value_next_to_label(agent_block, "Street Address:")
-        info["agent_mailing"] = _value_next_to_label(agent_block, "Mailing Address:")
-    else:
-        info["agent_name"] = ""
-        info["agent_street"] = ""
-        info["agent_mailing"] = ""
-
-    # Governors table
+    # ---- Governors (unchanged) ----
     governors = []
     gov_header = soup.find(
         "div",
         class_="div_header",
-        string=lambda s: s and "Governors" in s,
+        string=lambda s: s and "Governors" in s
     )
     if gov_header:
         table = gov_header.find_next("table")
         if table:
-            rows = table.find_all("tr")
-            if len(rows) > 1:
-                for row in rows[1:]:
-                    cells = [c.get_text(strip=True) for c in row.find_all("td")]
-                    if not cells:
-                        continue
-                    # Expected: [Title, Type, Entity Name, First Name, Last Name]
-                    title = cells[0] if len(cells) > 0 else ""
-                    entity_type = cells[1] if len(cells) > 1 else ""
-                    entity_name = cells[2] if len(cells) > 2 else ""
-                    first_name = cells[3] if len(cells) > 3 else ""
-                    last_name = cells[4] if len(cells) > 4 else ""
-
-                    if any([title, entity_name, first_name, last_name]):
-                        governors.append(
-                            {
-                                "title": title,
-                                "entity_type": entity_type,
-                                "entity_name": entity_name,
-                                "first_name": first_name,
-                                "last_name": last_name,
-                            }
-                        )
+            for row in table.select("tbody tr"):
+                cells = [c.get_text(strip=True) for c in row.find_all("td")]
+                if len(cells) >= 5:
+                    title, entity_type, entity_name, first_name, last_name = cells[:5]
+                    governors.append(
+                        {
+                            "title": title,
+                            "entity_type": entity_type,
+                            "entity_name": entity_name,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                        }
+                    )
     info["governors"] = governors
 
     return info
 
-
-# ---------- NEW: open BusinessInformation via Angular & parse HTML ----------
+# ---------- open BusinessInformation via Angular & parse HTML ----------
 def fetch_business_information_via_html(
     sb,
     biz_obj,
@@ -453,6 +500,19 @@ def fetch_business_information_via_html(
         "BusinessStatus": biz_obj.get("BusinessStatus") or biz_obj.get("Status"),
         "BusinessType": biz_obj.get("BusinessType") or biz_obj.get("Type"),
     }
+
+    # Agent info from Angular (used as fallback because static HTML often has no bound text)
+    angular_agent_name = biz_obj.get("AgentName")
+    angular_agent_street = None
+    angular_agent_mailing = None
+    agent_obj = biz_obj.get("Agent") or {}
+    if isinstance(agent_obj, dict):
+        street_addr = agent_obj.get("StreetAddress") or {}
+        mailing_addr = agent_obj.get("MailingAddress") or {}
+        if isinstance(street_addr, dict):
+            angular_agent_street = street_addr.get("FullAddress")
+        if isinstance(mailing_addr, dict):
+            angular_agent_mailing = mailing_addr.get("FullAddress")
 
     print(f"[DETAIL] Opening BusinessInformation for BusinessID={biz_id}...")
 
@@ -500,67 +560,57 @@ try {
         print(f"[DETAIL] JS error calling showBusineInfo for BusinessID={biz_id}: {e}")
         return None
 
-    # --- Cloudflare / Turnstile / Angular wait for FIRST detail per keyword ---
-    if first_detail_for_keyword:
-        print("\n[INFO] If a Cloudflare Turnstile / checkbox appears on the BusinessInformation page,")
-        print("       please solve it manually in the browser.")
-        print("[INFO] Wait until you see the Business Information fields populated")
-        print("       (e.g., Business Name and UBI Number).")
-        input("Once the BusinessInformation page is fully visible, press ENTER here to continue... ")
-    else:
-        # Automatic wait for subsequent details
-        sb.sleep(7)
-
-    # Wait for the BusinessInformation container to be present
+    # --- Wait for BusinessInformation page to be visible ---
     try:
-        sb.wait_for_element("#divBusinessInformation", timeout=20)
+        timeout = 30 if first_detail_for_keyword else 15
+        sb.wait_for_element("#divBusinessInformation", timeout=timeout)
     except Exception as e:
         print(f"[DETAIL] BusinessInformation not visible for BusinessID={biz_id}: {e}")
         return None
 
-    # Try to wait until business name is actually non-empty (up to ~10s)
-    business_name_text = ""
-    for i in range(10):
+    # Auto-dismiss any stray alert
+    dismiss_any_alert(sb)
+
+    # --- Wait for Business Name to be populated (handle Angular + Turnstile delay) ---
+    name_js = r"""
+var el = document.querySelector(
+    "#divBusinessInformation strong[data-ng-bind*='BusinessName']"
+);
+if (!el) { return ""; }
+return (el.textContent || "").trim();
+"""
+
+    name = ""
+    max_polls = 30 if first_detail_for_keyword else 15  # up to ~40s for first detail
+    for _ in range(max_polls):
         try:
-            business_name_text = sb.get_text(
-                "css=#divBusinessInformation strong[ng-bind*='BusinessName']"
-            ).strip()
+            name = (sb.execute_script(name_js) or "").strip()
         except Exception:
-            business_name_text = ""
-        if business_name_text:
+            name = ""
+        if name:
             break
         sb.sleep(1)
 
-    # Just in case: dismiss any stray alert
-    dismiss_any_alert(sb)
-
-    # Get HTML and parse it
+    # Capture HTML regardless, for debugging
     html_detail = sb.get_page_source()
-
-    # Optional: save raw HTML per business for debugging
     details_dir.mkdir(parents=True, exist_ok=True)
     safe_kw = sanitize_for_filename(keyword)
     html_path = details_dir / f"bi_html_{letter}_{safe_kw}_bid_{biz_id}.html"
     html_path.write_text(html_detail, encoding="utf-8")
     print(f"[DETAIL] Saved raw detail HTML for BusinessID={biz_id} -> {html_path}")
 
-    detail_parsed = parse_business_information_html(html_detail)
-
-    # If business_name is still empty, treat this as a failed detail
-    parsed_name = (detail_parsed.get("business_name") or "").strip()
-    if not parsed_name:
+    if not name:
         print(
-            f"[DETAIL] BusinessID={biz_id}: business_name empty after waits; "
-            "likely Cloudflare/Turnstile blocking; marking as failed."
+            f"[DETAIL] BusinessID={biz_id}: business_name still empty after waits; "
+            f"likely Cloudflare/Turnstile / Angular delay. Marking as failed but "
+            f"attempting to return to search."
         )
-        # Try to get back to results before returning
+        # Try to go back to results even if parse fails
         try:
-            if sb.is_element_present("#btnReturnToSearch"):
-                sb.click("#btnReturnToSearch")
-            else:
-                sb.execute_script("window.history.back();")
-            sb.wait_for_element("css=table.table-striped", timeout=20)
-            dismiss_any_alert(sb)
+            if click_detail_back_button(sb):
+                sb.sleep(5)
+                sb.wait_for_element("css=table.table-striped", timeout=40)
+                dismiss_any_alert(sb)
         except Exception as e:
             print(
                 f"[DETAIL] Warning: navigation back to results after FAILED BusinessID={biz_id} "
@@ -568,17 +618,26 @@ try {
             )
         return None
 
-    # Attach parsed details to record
+    # --- Parse detail HTML ---
+    detail_parsed = parse_business_information_html(html_detail)
+
+    # Fill/override agent fields from Angular if HTML had them blank
+    if not detail_parsed.get("agent_name") and angular_agent_name:
+        detail_parsed["agent_name"] = angular_agent_name
+    if not detail_parsed.get("agent_street") and angular_agent_street:
+        detail_parsed["agent_street"] = angular_agent_street
+    if not detail_parsed.get("agent_mailing") and angular_agent_mailing:
+        detail_parsed["agent_mailing"] = angular_agent_mailing
+
     record["BusinessInformationHTML"] = detail_parsed
 
-    # Navigate back to results
+    # --- Navigate back to search results ---
     try:
-        if sb.is_element_present("#btnReturnToSearch"):
-            sb.click("#btnReturnToSearch")
-        else:
-            sb.execute_script("window.history.back();")
-        sb.wait_for_element("css=table.table-striped", timeout=20)
-        dismiss_any_alert(sb)
+        if click_detail_back_button(sb):
+            # Give you time to handle any Cloudflare and let the table render
+            sb.sleep(5)  # Cloudflare + load
+            sb.wait_for_element("css=table.table-striped", timeout=40)
+            dismiss_any_alert(sb)
     except Exception as e:
         print(
             f"[DETAIL] Warning: navigation back to results after BusinessID={biz_id} "
@@ -603,6 +662,8 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             "details_file": None,
             "details_success": 0,
             "details_failed": 0,
+            "api_file": None,
+            "api_records": 0,
         }
 
     # === Fill search form with retry (handles transient '#entityStatus' issues) ===
@@ -645,8 +706,10 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
                     "details_file": None,
                     "details_success": 0,
                     "details_failed": 0,
+                    "api_file": None,
+                    "api_records": 0,
                 }
-            wait_s = 10 * attempt
+            wait_s = 5 * attempt
             print(f"[RETRY] Waiting {wait_s}s before form retry #{attempt+1} for keyword '{keyword}'...")
             sb.sleep(wait_s)
             ensure_advanced_search(sb)
@@ -661,20 +724,19 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             "details_file": None,
             "details_success": 0,
             "details_failed": 0,
+            "api_file": None,
+            "api_records": 0,
         }
 
-    # --- ONE-TIME MANUAL STEP (only for first keyword) ---
+    # --- AUTO-WAIT for first results table, NO input() ---
     if first_keyword:
-        print("\n[INFO] If Cloudflare challenge appears, solve it in the browser.")
-        print("[INFO] Wait until you see the **results table** and 'Page 1 of X' at the bottom.")
-        print("[INFO] Do NOT click any page numbers yourself.\n")
-        input("When the first results page for this run is fully visible, press ENTER here... ")
-    else:
-        # For subsequent keywords, just wait for the table (best-effort)
-        try:
-            sb.wait_for_element('css=table.table-striped', timeout=30)
-        except Exception:
-            print("[WARN] table.table-striped not found after waiting; continuing anyway.")
+        print("[INFO] Waiting for the first results table to appear...")
+        print("[INFO] If a Cloudflare / Turnstile challenge appears, solve it in the browser; "
+              "this script will keep waiting.")
+    try:
+        sb.wait_for_element("css=table.table-striped", timeout=30)
+    except Exception:
+        print("[WARN] table.table-striped not found after waiting; continuing anyway.")
 
     # We’ll track stats per keyword
     keyword_rows = []
@@ -686,13 +748,16 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
     details_success = 0
     details_failed = 0
 
+    # For Angular/API-style capture per keyword
+    api_pages = []
+
     # Paths
     safe_kw = sanitize_for_filename(keyword)
     debug_dir = out_dir
     details_dir = out_dir / "bi_html"
+    api_dir = out_dir / "api"
 
     visited_detail_ids = set()
-    first_detail_for_keyword = True  # <--- NEW FLAG
 
     while True:
         sb.sleep(2)
@@ -732,24 +797,29 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         else:
             print(f"[API] Angular businessList has {len(business_list)} entries on this page.")
 
+            # Save Angular "API-like" data for this page
+            api_pages.append(
+                {
+                    "page": page_index,
+                    "business_list": business_list,
+                }
+            )
+
             # Optionally, open HTML BusinessInformation for each business
             if FETCH_HTML_DETAILS:
                 for biz in business_list:
                     bid = biz.get("BusinessID") or biz.get("ID")
                     if not bid or bid in visited_detail_ids:
                         continue
+                    first_detail_for_kw = (details_success == 0 and details_failed == 0)
                     detail_rec = fetch_business_information_via_html(
                         sb,
                         biz,
                         letter,
                         keyword,
                         details_dir=details_dir,
-                        first_detail_for_keyword=first_detail_for_keyword,
+                        first_detail_for_keyword=first_detail_for_kw,
                     )
-                    # After the very first attempt, flip the flag off
-                    if first_detail_for_keyword:
-                        first_detail_for_keyword = False
-
                     if detail_rec is not None:
                         html_details_records.append(detail_rec)
                         details_success += 1
@@ -811,6 +881,28 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             f"for keyword '{keyword}' to {details_path}"
         )
 
+    # --- Save Angular/API-like businessList for this keyword (if any) ---
+    api_path = None
+    api_total_records = 0
+    if api_pages:
+        api_dir.mkdir(parents=True, exist_ok=True)
+        api_path = api_dir / f"wa_api_{letter}_{safe_kw}.json"
+        with api_path.open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "letter": letter,
+                    "keyword": keyword,
+                    "pages": api_pages,
+                },
+                f,
+                indent=2,
+            )
+        api_total_records = sum(len(p["business_list"]) for p in api_pages)
+        print(
+            f"[API] Saved Angular businessList for keyword '{keyword}' "
+            f"({api_total_records} records) to {api_path}"
+        )
+
     # Build result structure for this keyword
     keyword_result = {
         "keyword": keyword,
@@ -821,23 +913,30 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         "details_file": str(details_path) if details_path else None,
         "details_success": details_success,
         "details_failed": details_failed,
+        "api_file": str(api_path) if api_path else None,
+        "api_records": api_total_records,
     }
 
     print(
         f"[SUMMARY] Keyword '{keyword}': pages_visited={page_index}, "
         f"records_scraped={len(keyword_rows)}, "
-        f"details_success={details_success}, details_failed={details_failed}"
+        f"details_success={details_success}, details_failed={details_failed}, "
+        f"api_records={api_total_records}"
     )
 
     return keyword_result
 
 
-def run_letter(letter="A", out_dir="./output_wa3", headless=False):
+def run_letter(letter="A", out_dir="./output_wa_combined", headless=False):
     """
     Main entry to scrape all keywords for a given letter.
     Loads keywords from search_keywords/<letter>.txt,
-    scrapes each one in a single browser session, and saves
-    a JSON per letter with stats + rows, plus details tracking.
+    scrapes each one in a single browser session, and saves:
+
+    - wa_results_<LETTER>.json      (HTML table rows)
+    - wa_tracking_<LETTER>.json     (merged tracking per keyword)
+    - api/wa_api_<LETTER>_<KW>.json (per-keyword Angular data)
+    - bi_html/wa_bi_<LETTER>_<KW>.json (per-keyword BusinessInformation details)
     """
     letter = str(letter).upper()
     out_dir = Path(out_dir)
@@ -849,12 +948,12 @@ def run_letter(letter="A", out_dir="./output_wa3", headless=False):
         return
 
     all_keywords_results = []
-    tracking = []
+    tracking_combined = []
 
     with SB(
         uc=True,
         headless=headless,
-        # If you want to force Webshare:
+        # If you want to use your Webshare proxy, uncomment the next line:
         # proxy=PROXY_URL if PROXY_URL else None,
     ) as sb:
         sb.open(ADV_URL)
@@ -873,25 +972,30 @@ def run_letter(letter="A", out_dir="./output_wa3", headless=False):
                 )
                 all_keywords_results.append(result)
 
-                tracking.append(
+                # Combined tracking per keyword
+                tracking_combined.append(
                     {
                         "keyword": keyword,
+                        "records_scraped": result.get("records_scraped", 0),
                         "details_file": result.get("details_file"),
                         "details_success": result.get("details_success", 0),
                         "details_failed": result.get("details_failed", 0),
-                        "records_scraped": result.get("records_scraped", 0),
+                        "api_file": result.get("api_file"),
+                        "api_records": result.get("api_records", 0),
                     }
                 )
 
             except Exception as e:
                 print(f"[ERROR] Exception while scraping keyword '{keyword}': {e}")
-                tracking.append(
+                tracking_combined.append(
                     {
                         "keyword": keyword,
+                        "records_scraped": 0,
                         "details_file": None,
                         "details_success": 0,
                         "details_failed": 0,
-                        "records_scraped": 0,
+                        "api_file": None,
+                        "api_records": 0,
                         "error": str(e),
                     }
                 )
@@ -907,10 +1011,10 @@ def run_letter(letter="A", out_dir="./output_wa3", headless=False):
     with results_path.open("w", encoding="utf-8") as f:
         json.dump(letter_result, f, indent=2)
 
-    # Save details tracking JSON per letter
-    tracking_path = out_dir / f"wa_bi_tracking_{letter}.json"
-    with tracking_path.open("w", encoding="utf-8") as f:
-        json.dump(tracking, f, indent=2)
+    # Save combined tracking JSON per letter
+    combined_tracking_path = out_dir / f"wa_tracking_{letter}.json"
+    with combined_tracking_path.open("w", encoding="utf-8") as f:
+        json.dump(tracking_combined, f, indent=2)
 
     total_records = sum(k["records_scraped"] for k in all_keywords_results)
     print(
@@ -918,19 +1022,18 @@ def run_letter(letter="A", out_dir="./output_wa3", headless=False):
         f"total {total_records} records."
     )
     print(f"[SAVED] {results_path}")
-    if FETCH_HTML_DETAILS:
-        print(f"[SAVED] {tracking_path}")
+    print(f"[SAVED] {combined_tracking_path}")
 
     return letter_result
 
 
 if __name__ == "__main__":
     # Usage:
-    #   python3 wa_search_sb_local16.py A
+    #   python3 wa_search_sb_local21.py A
     # If no arg, default to 'A'
     if len(sys.argv) > 1:
         letter_arg = sys.argv[1]
     else:
-        letter_arg = "A"
+        letter_arg = "A1"
 
-    run_letter(letter_arg, out_dir="./output_wa5", headless=False)
+    run_letter(letter_arg, out_dir="./output_wa", headless=False)
