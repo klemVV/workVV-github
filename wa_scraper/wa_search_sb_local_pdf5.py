@@ -478,7 +478,7 @@ def parse_business_information_html(html: str) -> dict:
     return info
 
 # ---------- open BusinessInformation via Angular & parse HTML ----------
-def fetch_business_information_via_html(
+def fetch_business_information_via_html0(
     sb,
     biz_obj,
     letter,
@@ -552,7 +552,7 @@ catch(e){ return JSON.stringify({ok:false, error:String(e)}); }
         return None
 
     # --- Wait for BI to load ---
-    timeout = 30 if first_detail_for_keyword else 15
+    timeout = 10 if first_detail_for_keyword else 5
     try:
         sb.wait_for_element("#divBusinessInformation", timeout=timeout)
     except:
@@ -577,28 +577,22 @@ return el ? (el.textContent||"").trim() : "";
             break
         sb.sleep(1)
 
-    # --- Save BI HTML ---
-    html_detail = sb.get_page_source()
-    safe_kw = sanitize_for_filename(keyword)
-    html_path = details_dir / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(html_detail, encoding="utf-8")
-    print(f"[DETAIL] Saved detail HTML → {html_path}")
+    # --- Filing History + PDFs (FIRST, while the button is fresh) ---
+    '''
+    filings, pdf_summaries = scrape_filing_history_and_pdfs(
+        sb=sb,
+        biz_id=biz_id,
+        letter=letter,
+        keyword=keyword,
+        page_idx=page_idx,
+        row_idx=idx,
+        base_dir=details_dir,
+        pdf_base_dir=pdf_dir,
+        max_pdfs_per_business=max_pdfs_per_business,
+    )
+    '''
 
-    if not name:
-        print(f"[DETAIL] BusinessName empty → abort detail for {biz_id}")
-        try:
-            click_detail_back_button(sb)
-        except:
-            pass
-        return None
-
-    # --- Parse BI HTML ---
-    detail_parsed = parse_business_information_html(html_detail)
-
-    # --- Filing History + PDFs ---
-    try:
-        filings, pdf_summaries = scrape_filing_history_and_pdfs(
+    filings, pdf_summaries = scrape_filing_history_and_pdfs(
             sb=sb,
             letter=letter,
             keyword=keyword,
@@ -608,27 +602,172 @@ return el ? (el.textContent||"").trim() : "";
             out_dir=out_dir,
             max_pdfs_per_business=3,
         )
-        if filings:
-            record["FilingHistory"] = filings
-        if pdf_summaries:
-            record["FilingDocuments"] = pdf_summaries
-    except Exception as e:
-        print(f"[FILING] Error for {biz_id}: {e}")
 
-    # --- Agent fallback fixes ---
-    if not detail_parsed.get("agent_name") and angular_agent_name:
-        detail_parsed["agent_name"] = angular_agent_name
-    if not detail_parsed.get("agent_street") and angular_agent_street:
-        detail_parsed["agent_street"] = angular_agent_street
-    if not detail_parsed.get("agent_mailing") and angular_agent_mailing:
-        detail_parsed["agent_mailing"] = angular_agent_mailing
+    # At this point, scrape_filing_history_and_pdfs() will have returned us
+    # to the Business Information screen (see patch below).
 
+    # --- Save BI HTML (AFTER returning from Filing History) ---
+    html_detail = sb.get_page_source()
+    safe_kw = sanitize_for_filename(keyword)
+    html_path = details_dir / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html_detail, encoding="utf-8")
+
+    # --- Parse BI HTML ---
+    detail_parsed = parse_business_information_html(html_detail)
+    if detail_parsed is None:
+        print(f"[DETAIL] parse_business_information_html() returned None for BusinessID={biz_id}.")
+    else:
+        print(f"[DETAIL] Parsed {len(detail_parsed)} BI fields for BusinessID={biz_id}")
+
+    # --- Fill record with everything ---
     record["BusinessInformationHTMLPath"] = str(html_path)
     record["BusinessInformationHTML"] = detail_parsed
+    record["FilingHistoryRecords"] = filings
+    record["PDFSummaries"] = pdf_summaries
+    record["PDFDownloadedCount"] = len(pdf_summaries)
 
     # --- Back to search ---
     try:
-        click_back_with_cf(sb)
+        click_back_with_cf(sb, description=f"BusinessID={biz_id}")
+        dismiss_any_alert(sb)
+    except Exception as e:
+        print(f"[DETAIL] Warning returning to results ({biz_id}): {e}")
+
+    return record
+
+def fetch_business_information_via_html(
+    sb,
+    biz_obj,
+    letter,
+    keyword,
+    letter_idx,
+    page_idx,
+    idx,                     # row index within page
+    out_dir: Path,
+    details_dir: Path,
+    first_detail_for_keyword: bool = False,
+):
+    """
+    Opens BusinessInformation via Angular, scrapes Filing History + PDFs ASAP,
+    then saves & parses the Business Information HTML, and returns a record dict.
+    """
+
+    biz_id = biz_obj.get("BusinessID") or biz_obj.get("ID")
+    if not biz_id:
+        return None
+
+    record = {
+        "BusinessID": biz_id,
+        "UBINumber": biz_obj.get("UBINumber"),
+        "BusinessName": biz_obj.get("BusinessName") or biz_obj.get("EntityName"),
+        "BusinessStatus": biz_obj.get("BusinessStatus") or biz_obj.get("Status"),
+        "BusinessType": biz_obj.get("BusinessType") or biz_obj.get("Type"),
+    }
+
+    # --- (Angular agent fallback code stays the same here) ---
+
+    print(f"[DETAIL] Opening BusinessInformation for BusinessID={biz_id}...")
+
+    # --- Angular JS open (unchanged) ---
+    open_js = r"""
+var bid = arguments[0];
+if (typeof angular === "undefined") return JSON.stringify({ok:false, error:"angular not found"});
+var tbody = document.querySelector("tbody[ng-show*='businessList']");
+if (!tbody) return JSON.stringify({ok:false, error:"tbody not found"});
+
+var el = tbody, foundScope = null;
+for (var i=0;i<6 && el;i++){
+    var s = angular.element(el).scope() || angular.element(el).isolateScope();
+    if (s && typeof s.showBusineInfo === "function") { foundScope = s; break; }
+    el = el.parentElement;
+}
+if (!foundScope) return JSON.stringify({ok:false, error:"showBusineInfo not found"});
+
+try { foundScope.showBusineInfo(bid); foundScope.$applyAsync(); return JSON.stringify({ok:true}); }
+catch(e){ return JSON.stringify({ok:false, error:String(e)}); }
+"""
+    try:
+        raw = sb.execute_script(open_js, biz_id)
+        result = json.loads(raw) if isinstance(raw, str) else raw
+        if not result.get("ok"):
+            print(f"[DETAIL] Failed to open BI for {biz_id}: {result.get('error')}")
+            return None
+    except Exception as e:
+        print(f"[DETAIL] JS error calling showBusineInfo: {e}")
+        return None
+
+    # --- Wait for BI container to appear ---
+    timeout = 10 if first_detail_for_keyword else 5
+    try:
+        sb.wait_for_element("#divBusinessInformation", timeout=timeout)
+    except:
+        print(f"[DETAIL] BI not visible for {biz_id}")
+        return None
+
+    # Clear any alert
+    dismiss_any_alert(sb)
+
+    # ------------------------------------------------------------------
+    # 🔴 NEW ORDER: Go to Filing History + PDFs *immediately*,
+    # BEFORE waiting for Business Name to settle
+    # ------------------------------------------------------------------
+    filings, pdf_summaries = scrape_filing_history_and_pdfs(
+        sb=sb,
+        letter=letter,
+        keyword=keyword,
+        page_idx=page_idx,
+        biz_index=idx,
+        business_id=biz_id,
+        out_dir=out_dir,
+        max_pdfs_per_business=3,
+    )
+    # At this point, scrape_filing_history_and_pdfs() should have brought us
+    # back to the Business Information view.
+    dismiss_any_alert(sb)
+
+    # ------------------------------------------------------------------
+    # NOW wait for Business Name field to populate (quick check)
+    # ------------------------------------------------------------------
+    name_js = r"""
+var el = document.querySelector("#divBusinessInformation strong[data-ng-bind*='BusinessName']");
+return el ? (el.textContent||"").trim() : "";
+"""
+    name = ""
+    polls = 15 if first_detail_for_keyword else 8  # shorter now
+    for _ in range(polls):
+        try:
+            name = (sb.execute_script(name_js) or "").strip()
+        except:
+            name = ""
+        if name:
+            break
+        sb.sleep(1)
+
+    # --- Save BI HTML AFTER Filing History is done ---
+    html_detail = sb.get_page_source()
+    safe_kw = sanitize_for_filename(keyword)
+    html_path = details_dir / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html_detail, encoding="utf-8")
+
+    # --- Parse BI HTML ---
+    detail_parsed = parse_business_information_html(html_detail)
+    if detail_parsed is None:
+        print(f"[DETAIL] parse_business_information_html() returned None for BusinessID={biz_id}.")
+    else:
+        print(f"[DETAIL] Parsed {len(detail_parsed)} BI fields for BusinessID={biz_id}")
+
+    # --- Fill record ---
+    record["BusinessInformationHTMLPath"] = str(html_path)
+    record["BusinessInformationHTML"] = detail_parsed
+    record["FilingHistoryRecords"] = filings
+    record["PDFSummaries"] = pdf_summaries
+    record["PDFDownloadedCount"] = len(pdf_summaries)
+
+    # --- Back to search results ---
+    try:
+        click_back_with_cf(sb, description=f"BusinessID={biz_id}")
         dismiss_any_alert(sb)
     except Exception as e:
         print(f"[DETAIL] Warning returning to results ({biz_id}): {e}")
@@ -904,67 +1043,681 @@ def download_pdf_for_filing(sb, filing_number: str, save_path: str) -> bool:
         print(f"[PDF] Failed to write PDF {save_path}: {e}")
         return False
 
-def click_back_with_cf(sb):
+def close_view_documents_modal(sb, timeout: int = 5) -> bool:
     """
-    From either Filing History or BusinessInformation, navigate all the way
-    back to the search results list, with Cloudflare-aware waits.
+    Try to close the 'View Documents' modal if it is open.
 
-    Path we handle:
-      - Filing History -> BusinessInformation -> Search Results
-      - Or directly: BusinessInformation -> Search Results
+    Uses the real HTML:
+      <button class="close" data-dismiss="modal" ...>×</button>
+
+    Returns True if the modal is gone, False otherwise.
     """
     try:
-        # 0) Already on results?
-        if sb.is_element_present("css=tbody[ng-show*='businessList']"):
-            print("[NAV] Already on results list.")
-            return
+        for _ in range(timeout):
+            # If no modal-dialog is present, we're done
+            if not sb.is_element_present("css=.modal-dialog"):
+                return True
 
-        # 1) If 'Return to Business Search' is already visible, we're on BI.
-        if sb.is_element_present("#btnReturnToSearch"):
-            print("[NAV] On BI: clicking 'Return to Business Search'.")
-            sb.click("#btnReturnToSearch")
-            sb.sleep(9)  # Cloudflare / Angular
-            sb.wait_for_element("css=tbody[ng-show*='businessList']", timeout=60)
-            print("[NAV] Back on results after ReturnToSearch.")
-            return
+            # Try the exact button you showed
+            try:
+                btns = sb.driver.find_elements(
+                    "css selector", "button.close[data-dismiss='modal']"
+                )
+                for b in btns:
+                    if b.is_displayed():
+                        sb.driver.execute_script("arguments[0].click();", b)
+                        sb.sleep(1)
+                        if not sb.is_element_present("css=.modal-dialog"):
+                            print("[PDF] Closed modal via button.close[data-dismiss='modal'].")
+                            return True
+            except Exception:
+                pass
 
-        # 2) Otherwise we’re probably on Filing History.
-        #    Try its Back (showBusineInfo -> BI).
-        if sb.is_element_present("css=button[ng-click*='showBusineInfo']"):
-            print("[NAV] On Filing History: clicking Back to BI.")
-            sb.click("css=button[ng-click*='showBusineInfo']")
-            sb.sleep(9)  # Cloudflare / Angular
+            # Fallbacks: any visible .close inside a modal
+            try:
+                close_candidates = sb.driver.find_elements(
+                    "css selector", ".modal-content .close, .modal-dialog .close"
+                )
+                for c in close_candidates:
+                    if c.is_displayed():
+                        sb.driver.execute_script("arguments[0].click();", c)
+                        sb.sleep(1)
+                        if not sb.is_element_present("css=.modal-dialog"):
+                            print("[PDF] Closed modal via .modal-content/.modal-dialog .close.")
+                            return True
+            except Exception:
+                pass
 
-        # 3) Now we expect to be on BI. Prefer 'Return to Business Search' if present.
-        if sb.is_element_present("#btnReturnToSearch"):
-            print("[NAV] On BI now: clicking 'Return to Business Search'.")
-            sb.click("#btnReturnToSearch")
-            sb.sleep(9)
-            sb.wait_for_element("css=tbody[ng-show*='businessList']", timeout=60)
-            print("[NAV] Back on results after BI ReturnToSearch.")
-            return
+            sb.sleep(1)
 
-        # 4) Fallback: BI "Back" button (navBusinessSearch()).
-        if sb.is_element_present("css=button[ng-click*='navBusinessSearch']"):
-            print("[NAV] Using BI Back button (navBusinessSearch).")
-            sb.click("css=button[ng-click*='navBusinessSearch']")
-            sb.sleep(9)
-            sb.wait_for_element("css=tbody[ng-show*='businessList']", timeout=60)
-            print("[NAV] Back on results via BI Back.")
-            return
-
-        # 5) Last resort: browser history.
-        print("[NAV] No explicit BI/Filing back buttons; using browser history().")
-        sb.go_back()
-        sb.sleep(9)
-        if not sb.is_element_present("css=tbody[ng-show*='businessList']"):
-            sb.go_back()
-            sb.sleep(9)
-        sb.wait_for_element("css=tbody[ng-show*='businessList']", timeout=60)
-        print("[NAV] Back on results after history.back() fallback.")
+        print("[PDF] Failed to close modal using all known selectors.")
+        return False
 
     except Exception as e:
-        print(f"[NAV] Error while returning to results: {e}")
+        print(f"[PDF] Exception in close_view_documents_modal: {e}")
+        return False
+    
+def click_back_with_cf1(sb, description: str = ""):
+    """
+    Return from:
+       - View Documents modal  -> Filing History
+       - Filing History        -> Business Information
+       - Business Information  -> Business Search results table
+
+    Handles Cloudflare/Turnstile if needed, but does NOT use window.history.back()
+    anymore (to avoid overshooting past the results list).
+
+    description: optional label for logging (e.g. 'BusinessID=123').
+    """
+
+    RESULTS_SELECTORS = [
+        "css=tbody[ng-show*='businessList'] tr",     # tbody with ng-show on businessList
+        "css=tbody tr[ng-repeat*='business']",       # rows in results table
+    ]
+
+    def close_view_documents_modal_if_open():
+        """Close the 'View Documents' modal if it is still open."""
+        try:
+            # any open modal-dialog
+            if sb.is_element_present("css=.modal-dialog"):
+                print("[NAV] Modal detected; attempting to close it.")
+                # preferred close button for this modal
+                try:
+                    sb.click("css=button.close[data-dismiss='modal']")
+                    sb.sleep(1)
+                    return
+                except Exception:
+                    pass
+                # fallback close buttons inside modal
+                try:
+                    sb.click("css=#divSearchResult button.close")
+                    sb.sleep(1)
+                    return
+                except Exception:
+                    pass
+                try:
+                    sb.click("css=.modal-content .close")
+                    sb.sleep(1)
+                    return
+                except Exception:
+                    pass
+                print("[NAV] WARNING: Could not close modal via known selectors.")
+        except Exception as e:
+            print(f"[NAV] Error while checking/closing modal: {e}")
+
+    def wait_for_results_grid(label: str) -> bool:
+        """Best-effort: check if the results table appears. No extra navigation."""
+        for sel in RESULTS_SELECTORS:
+            try:
+                if sb.is_element_present(sel):
+                    print(f"[NAV] Results grid detected after {label} via selector: {sel}")
+                    return True
+            except Exception:
+                pass
+        return False
+
+    try:
+        if description:
+            print(f"[NAV] Returning to results ({description})...")
+
+        # --- 0) If a 'View Documents' modal is open, close it first ---
+        close_view_documents_modal_if_open()
+
+        # --- 1) If there's a Cloudflare / Turnstile challenge, give user time ---
+        # Note: this site uses a <cf-turnstile> widget; the visible wrapper has class 'cf-turnstile'.
+        if sb.is_element_present("css=.cf-turnstile") or sb.is_element_present("css=#cf-challenge"):
+            print("[NAV] Cloudflare / Turnstile challenge detected while returning.")
+            print("[NAV] Please solve it in the browser; waiting up to 5 minutes...")
+            for _ in range(300):  # up to ~5 minutes
+                if not (sb.is_element_present("css=.cf-turnstile") or
+                        sb.is_element_present("css=#cf-challenge")):
+                    break
+                time.sleep(1)
+
+        # --- 2) If we're on Filing History, click 'Back to Business Information' ---
+        # That button only exists on the Filing History view.
+        try:
+            if sb.is_element_present("css=button[ng-click*='showBusineInfo']"):
+                print("[NAV] On Filing History: clicking 'Back to Business Information'.")
+                sb.click("css=button[ng-click*='showBusineInfo']")
+                sb.sleep(8)  # allow BI to load
+            else:
+                print("[NAV] No 'Back to Business Information' button found; likely not on Filing History.")
+        except Exception as e:
+            print(f"[NAV] Error clicking 'Back to Business Information': {e}")
+
+        # --- 3) From Business Information, click 'Return to Business Search' ---
+        # On BI, this is the button that takes you back to the results list.
+        try:
+            if sb.is_element_present("css=#btnReturnToSearch"):
+                print("[NAV] On BI: clicking 'Return to Business Search'.")
+                sb.click("css=#btnReturnToSearch")
+                sb.sleep(8)
+            else:
+                print("[NAV] '#btnReturnToSearch' not found on this view.")
+        except Exception as e:
+            print(f"[NAV] Error clicking '#btnReturnToSearch': {e}")
+
+        # --- 4) Cloudflare/Turnstile might appear again after navigation ---
+        if sb.is_element_present("css=.cf-turnstile") or sb.is_element_present("css=#cf-challenge"):
+            print("[NAV] Cloudflare / Turnstile detected after navigation.")
+            print("[NAV] Please solve it in the browser; waiting up to 5 minutes...")
+            for _ in range(300):
+                if not (sb.is_element_present("css=.cf-turnstile") or
+                        sb.is_element_present("css=#cf-challenge")):
+                    break
+                time.sleep(1)
+
+        # --- 5) Best-effort check: are we back on the results list? ---
+        if not wait_for_results_grid("click_back_with_cf()"):
+            print("[NAV] WARNING: Results grid not detected, but NOT calling history.back(). "
+                  "Continuing from current page anyway.")
+        else:
+            print("[NAV] Back on results list; navigation complete.")
+
+        return True
+
+    except Exception as e:
+        print(f"[NAV] Unexpected error in click_back_with_cf(): {e}")
+        return False
+
+def click_back_with_cf2(sb, description: str = ""):
+    """
+    Robust navigation back to the BusinessSearch results grid.
+
+    Handles, in order:
+      - If a "View Documents" modal is open, close it.
+      - Cloudflare challenge (waits for manual solve if present).
+      - Uses up to 3 history steps and/or Return button to get back
+        to the results list, checking the grid after each step.
+
+    This function is designed to be safe whether you call it from:
+      - Filing History (after downloading PDFs), or
+      - Business Information, or
+      - Already on the search results.
+    """
+
+    # --- Helpers -----------------------------------------------------------
+    RESULTS_SELECTORS = [
+        "css=tbody[ng-show*='businessList'] tr",   # original working selector
+        "css=tbody tr[ng-repeat*='business']",     # rows in results table
+        "css=table.table-striped tbody tr[ng-repeat]",  # generic Angular rows
+    ]
+
+    def results_visible(label: str = "") -> bool:
+        """Check if the BusinessSearch results grid is present."""
+        for sel in RESULTS_SELECTORS:
+            try:
+                sb.wait_for_element(sel, timeout=3)
+                if label:
+                    print(f"[NAV] Results grid detected ({label}) via selector: {sel}")
+                else:
+                    print(f"[NAV] Results grid detected via selector: {sel}")
+                return True
+            except Exception:
+                continue
+        return False
+
+    def close_any_modal():
+        """If a modal (like 'View Documents') is open, close it."""
+        try:
+            # Most accurate selector for the X button you showed:
+            if sb.is_element_present("css=button.close[data-dismiss='modal']"):
+                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
+                sb.click("css=button.close[data-dismiss='modal']")
+                sb.sleep(2)
+                return
+
+            # Fallback: any close button inside a visible modal
+            if sb.is_element_present("css=.modal-dialog .close"):
+                print("[NAV] Closing modal via .modal-dialog .close.")
+                sb.click("css=.modal-dialog .close")
+                sb.sleep(2)
+                return
+
+            # Extra fallback: click backdrop (if any)
+            if sb.is_element_present("css=.modal-backdrop"):
+                print("[NAV] Clicking modal backdrop as last-resort close.")
+                sb.click("css=.modal-backdrop")
+                sb.sleep(2)
+        except Exception as e:
+            print(f"[NAV] Warning: error while trying to close modal: {e}")
+
+    def handle_cloudflare(context: str):
+        """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
+        try:
+            if sb.is_element_present("css=#cf-challenge") or sb.is_element_present("css=.cf-challenge"):
+                print(f"[NAV] Cloudflare challenge detected ({context}).")
+                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
+                for _ in range(300):
+                    if not (
+                        sb.is_element_present("css=#cf-challenge")
+                        or sb.is_element_present("css=.cf-challenge")
+                    ):
+                        print("[NAV] Cloudflare challenge cleared.")
+                        break
+                    time.sleep(1)
+        except Exception as e:
+            print(f"[NAV] Warning while checking Cloudflare: {e}")
+
+    # --- Main logic --------------------------------------------------------
+    if description:
+        print(f"[NAV] Returning to results ({description})...")
+
+    # Step 0: if a modal is open, close it first
+    if sb.is_element_present("css=.modal-dialog"):
+        print("[NAV] Modal detected while returning to results; closing it first.")
+        close_any_modal()
+        sb.sleep(1)
+
+    # If we are already on the results page, just confirm and return
+    if results_visible("initial check"):
+        return True
+
+    # We'll try up to 3 navigation steps to get back
+    for step in range(2):
+        handle_cloudflare(f"before nav step {step+1}")
+
+        # If after Cloudflare we already see results, we're done
+        if results_visible(f"after Cloudflare step {step+1}"):
+            return True
+
+        # Prefer the explicit "Return to Business Search" button if present
+        try:
+            if sb.is_element_present("css=#btnReturnToSearch"):
+                print("[NAV] Clicking '#btnReturnToSearch' to go back to results.")
+                sb.click("css=#btnReturnToSearch")
+                sb.sleep(6)
+
+                if results_visible(f"after #btnReturnToSearch (step {step+1})"):
+                    return True
+                # If not, continue to next loop iteration
+                continue
+        except Exception as e:
+            print(f"[NAV] Warning clicking #btnReturnToSearch: {e}")
+
+        # Otherwise, rely on browser history
+        try:
+            print(f"[NAV] Using window.history.back() (step {step+1}).")
+            sb.driver.execute_script("window.history.back()")
+            sb.sleep(15)
+        except Exception as e:
+            print(f"[NAV] Warning calling window.history.back(): {e}")
+
+        # Check if we are back on results after this history step
+        if results_visible(f"after history.back() (step {step+1})"):
+            return True
+
+    # Final check after all attempts
+    if results_visible("final check"):
+        return True
+
+    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
+    return False
+
+def click_back_with_cf3(sb, description: str = ""):
+    """
+    Robust navigation back to the BusinessSearch results grid.
+
+    Handles, in order:
+      - If a "View Documents" modal is open, close it.
+      - Cloudflare challenge (waits for manual solve if present).
+      - Uses Filing History "Back to Business Information",
+        Business Information "Return to Business Search",
+        and finally window.history.back() as fallback.
+
+    It is safe to call this when:
+      - On Filing History (after PDFs),
+      - On Business Information,
+      - Already on BusinessSearch results.
+
+    It will NOT keep calling history.back() once the results
+    grid is detected on the BusinessSearch route.
+    """
+
+    # --- Helper selectors / route checks -----------------------------------
+    RESULTS_SELECTORS = [
+        "css=tbody[ng-show*='businessList'] tr",     # original working selector
+        "css=tbody tr[ng-repeat*='business']",       # rows in results table
+        "css=table.table-striped tbody tr[ng-repeat]"  # generic Angular rows
+    ]
+
+    def get_url() -> str:
+        try:
+            return sb.driver.current_url or ""
+        except Exception:
+            return ""
+
+    def is_on_results_page() -> bool:
+        """We only treat it as 'results' if URL has BusinessSearch AND grid present."""
+        url = get_url()
+        if "BusinessSearch" not in url:
+            return False
+        for sel in RESULTS_SELECTORS:
+            try:
+                sb.wait_for_element(sel, timeout=3)
+                print(f"[NAV] Results grid detected on BusinessSearch via selector: {sel}")
+                return True
+            except Exception:
+                continue
+        return False
+
+    def is_on_bi_page() -> bool:
+        """Heuristic: BI route + 'Return to Business Search' button."""
+        url = get_url()
+        if "BusinessInformation" not in url:
+            return False
+        return sb.is_element_present("css=#btnReturnToSearch")
+
+    def is_on_filing_history_page() -> bool:
+        """
+        Heuristic: presence of Filing History 'Back to Business Information' button.
+        The same button exists only on Filing History tab.
+        """
+        return sb.is_element_present("css=button[ng-click*='showBusineInfo']")
+
+    def close_any_modal():
+        """If a modal (like 'View Documents') is open, close it via the X button."""
+        try:
+            # Most accurate selector for the X button you showed:
+            if sb.is_element_present("css=button.close[data-dismiss='modal']"):
+                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
+                sb.click("css=button.close[data-dismiss='modal']")
+                sb.sleep(2)
+                return
+
+            # Fallback: any close button inside a visible modal
+            if sb.is_element_present("css=.modal-dialog .close"):
+                print("[NAV] Closing modal via .modal-dialog .close.")
+                sb.click("css=.modal-dialog .close")
+                sb.sleep(2)
+                return
+
+            # Extra fallback: click backdrop (if any)
+            if sb.is_element_present("css=.modal-backdrop"):
+                print("[NAV] Clicking modal backdrop as last-resort close.")
+                sb.click("css=.modal-backdrop")
+                sb.sleep(2)
+        except Exception as e:
+            print(f"[NAV] Warning: error while trying to close modal: {e}")
+
+    def handle_cloudflare(context: str):
+        """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
+        try:
+            if sb.is_element_present("css=#cf-challenge") or sb.is_element_present("css=.cf-challenge"):
+                print(f"[NAV] Cloudflare challenge detected ({context}).")
+                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
+                for _ in range(300):
+                    if not (
+                        sb.is_element_present("css=#cf-challenge")
+                        or sb.is_element_present("css=.cf-challenge")
+                    ):
+                        print("[NAV] Cloudflare challenge cleared.")
+                        break
+                    time.sleep(1)
+        except Exception as e:
+            print(f"[NAV] Warning while checking Cloudflare: {e}")
+
+    # --- Main logic --------------------------------------------------------
+    if description:
+        print(f"[NAV] Returning to results ({description})...")
+
+    # Step 0: if a modal is open, close it first
+    if sb.is_element_present("css=.modal-dialog"):
+        print("[NAV] Modal detected while returning to results; closing it first.")
+        close_any_modal()
+        sb.sleep(1)
+
+    # Early exit: if we are already on the results page, just confirm and return
+    if is_on_results_page():
+        return True
+
+    # We will attempt up to 3 navigation actions total
+    for step in range(3):
+        handle_cloudflare(f"before nav step {step+1}")
+
+        # If after Cloudflare we already see the results, we're done
+        if is_on_results_page():
+            return True
+
+        # 1) If we are on Filing History, go BI via "Back to Business Information"
+        if is_on_filing_history_page():
+            print("[NAV] On Filing History: clicking 'Back to Business Information'.")
+            try:
+                sb.click("css=button[ng-click*='showBusineInfo']")
+                sb.sleep(6)
+            except Exception as e:
+                print(f"[NAV] Warning clicking 'Back to Business Information': {e}")
+            # After this click we should be on BI; continue loop to handle BI -> Search.
+            continue
+
+        # 2) If we are on Business Information, prefer the explicit "Return" button
+        if is_on_bi_page():
+            print("[NAV] On Business Information: clicking '#btnReturnToSearch'.")
+            try:
+                sb.click("css=#btnReturnToSearch")
+                sb.sleep(6)
+            except Exception as e:
+                print(f"[NAV] Warning clicking #btnReturnToSearch: {e}")
+            # After this we expect BusinessSearch; re-check in next iteration
+            if is_on_results_page():
+                return True
+            continue
+
+        # 3) If neither Filing History nor BI heuristics match, but we end up
+        #    on BusinessSearch route without grid yet, give it some time.
+        url = get_url()
+        if "BusinessSearch" in url:
+            print("[NAV] On BusinessSearch route but grid not yet visible; waiting briefly.")
+            sb.sleep(4)
+            if is_on_results_page():
+                return True
+            # If still no grid, fall through to history.back() as a last resort.
+
+        # 4) Last resort: use browser history to go back exactly one step
+        print(f"[NAV] Using window.history.back() (step {step+1}).")
+        try:
+            sb.driver.execute_script("window.history.back()")
+            sb.sleep(8)
+        except Exception as e:
+            print(f"[NAV] Warning calling window.history.back(): {e}")
+
+        # After history, if we are on results page, stop immediately.
+        if is_on_results_page():
+            return True
+
+        # If we find ourselves on AdvancedSearch, do NOT go back further.
+        url_after = get_url()
+        if "AdvancedSearch" in url_after:
+            print("[NAV] Reached AdvancedSearch page; stopping further back navigation.")
+            break
+
+    # Final check after all attempts
+    if is_on_results_page():
+        return True
+
+    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
+    return False
+
+def click_back_with_cf(sb, description: str = ""):
+    """
+    Robust navigation back to the BusinessSearch results grid.
+
+    Designed for calls from:
+      - Filing History (after downloading PDFs), or
+      - Business Information, or
+      - Already on the search results.
+
+    Strategy:
+      1. Close any open modal (e.g., View Documents).
+      2. If already on Business Search results, stop.
+      3. If on Business Information, click the 'Back' button (btn-back),
+         which calls navBusinessSearch() and returns to the results list.
+      4. Otherwise, use window.history.back() in small steps, checking
+         for Business Search results after each step.
+      5. If we reach AdvancedSearch, we stop and do NOT go further back.
+    """
+
+    # --- Helpers -----------------------------------------------------------
+    def is_on_search_results() -> bool:
+        """Detect the Business Search results page using URL + key text."""
+        try:
+            url = sb.get_current_url()
+        except Exception:
+            return False
+
+        if "BusinessSearch" not in url:
+            return False
+
+        try:
+            html = sb.get_page_source()
+        except Exception:
+            return False
+
+        # Markers visible on the results page
+        markers = [
+            "Business Search Results",  # div_header title :contentReference[oaicite:2]{index=2}
+            "Page 1 of",                # pager text :contentReference[oaicite:3]{index=3}
+            "businessList.length  &gt; 0"  # ng-show on tbody :contentReference[oaicite:4]{index=4}
+        ]
+        if any(m in html for m in markers):
+            print("[NAV] Detected Business Search RESULTS page.")
+            return True
+        return False
+
+    def is_on_business_info() -> bool:
+        """Detect the Business Information page using URL + header text."""
+        try:
+            url = sb.get_current_url()
+            html = sb.get_page_source()
+        except Exception:
+            return False
+
+        if "BusinessInformation" in url:
+            return True
+        # Header: <h2>Business Information</h2> :contentReference[oaicite:5]{index=5}
+        if "Business Information</h2>" in html:
+            return True
+        return False
+
+    def reached_advanced_search() -> bool:
+        """Detect if we overshot back to Advanced Search."""
+        try:
+            url = sb.get_current_url()
+        except Exception:
+            return False
+        return "AdvancedSearch" in url
+
+    def close_any_modal():
+        """If a modal (like 'View Documents') is open, close it."""
+        try:
+            if sb.is_element_present("css=button.close[data-dismiss='modal']"):
+                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
+                sb.click("css=button.close[data-dismiss='modal']")
+                sb.sleep(2)
+                return
+
+            if sb.is_element_present("css=.modal-dialog .close"):
+                print("[NAV] Closing modal via .modal-dialog .close.")
+                sb.click("css=.modal-dialog .close")
+                sb.sleep(2)
+                return
+
+            if sb.is_element_present("css=.modal-backdrop"):
+                print("[NAV] Clicking modal backdrop as last-resort close.")
+                sb.click("css=.modal-backdrop")
+                sb.sleep(2)
+        except Exception as e:
+            print(f"[NAV] Warning: error while trying to close modal: {e}")
+
+    def handle_cloudflare(context: str):
+        """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
+        try:
+            if sb.is_element_present("css=#cf-chl-widget") or sb.is_element_present("css=.cf-turnstile"):
+                print(f"[NAV] Cloudflare Turnstile detected ({context}).")
+                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
+                for _ in range(300):
+                    if not (
+                        sb.is_element_present("css=#cf-chl-widget")
+                        or sb.is_element_present("css=.cf-turnstile")
+                    ):
+                        print("[NAV] Cloudflare challenge cleared.")
+                        break
+                    time.sleep(1)
+        except Exception as e:
+            print(f"[NAV] Warning while checking Cloudflare: {e}")
+
+    # --- Main logic --------------------------------------------------------
+    if description:
+        print(f"[NAV] Returning to results ({description})...")
+
+    # Step 0: close any modal (e.g., View Documents)
+    if sb.is_element_present("css=.modal-dialog"):
+        print("[NAV] Modal detected while returning to results; closing it first.")
+        close_any_modal()
+        sb.sleep(1)
+
+    # Step 1: if we are already on results, done.
+    if is_on_search_results():
+        return True
+
+    # Step 2: if we are on Business Information, use the 'Back' button
+    # (.btn-back → ng-click='navBusinessSearch()') to go to results. :contentReference[oaicite:6]{index=6}
+    if is_on_business_info():
+        try:
+            if sb.is_element_present("css=button.btn-back"):
+                print("[NAV] On Business Information; clicking '.btn-back' to go to results.")
+                sb.click("css=button.btn-back")
+                sb.sleep(5)
+
+                # Wait a bit for the results page to render
+                for _ in range(10):
+                    if is_on_search_results():
+                        return True
+                    if reached_advanced_search():
+                        print("[NAV] Landed on AdvancedSearch after '.btn-back'; stopping.")
+                        return False
+                    time.sleep(1)
+        except Exception as e:
+            print(f"[NAV] Warning while clicking '.btn-back': {e}")
+
+    # Step 3: Fallback – use history.back() a few times, checking after each
+    for step in range(3):
+        handle_cloudflare(f"before history.back step {step+1}")
+
+        # Re-check before navigating
+        if is_on_search_results():
+            return True
+        if reached_advanced_search():
+            print("[NAV] Already on AdvancedSearch; not navigating back further.")
+            return False
+
+        # Do one history step
+        try:
+            print(f"[NAV] Using window.history.back() (step {step+1}).")
+            sb.driver.execute_script("window.history.back()")
+        except Exception as e:
+            print(f"[NAV] Warning calling window.history.back(): {e}")
+            break
+
+        sb.sleep(5)
+
+        # After each back, wait up to ~10 seconds for results or AdvancedSearch
+        for _ in range(10):
+            if is_on_search_results():
+                return True
+            if reached_advanced_search():
+                print("[NAV] Reached AdvancedSearch page; stopping further back navigation.")
+                return False
+            time.sleep(1)
+
+    # Final check
+    if is_on_search_results():
+        return True
+
+    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
+    return False
+
 
 def wait_for_new_pdf(download_dir: Path, before_files: set, timeout: int = 60) -> Path | None:
     """Poll download_dir for a new PDF that wasn't in before_files.
@@ -983,6 +1736,90 @@ def wait_for_new_pdf(download_dir: Path, before_files: set, timeout: int = 60) -
             return max(new_files, key=lambda p: p.stat().st_mtime)
         time.sleep(1)
     return None
+
+def safe_return_to_results(sb, business_id: str | None = None, filing_no: str | None = None) -> bool:
+    """
+    Wrapper around click_back_with_cf() with nicer logging.
+
+    Use this everywhere after you finish handling a BusinessInformation page
+    (including after scrape_filing_history_and_pdfs).
+    """
+    parts = []
+    if business_id:
+        parts.append(f"BusinessID={business_id}")
+    if filing_no:
+        parts.append(f"filing={filing_no}")
+    desc = ", ".join(parts) if parts else "generic"
+
+    ok = click_back_with_cf(sb, description=desc)
+    if not ok:
+        print(f"[DETAIL] Warning: could not return to results ({desc}).")
+    return ok
+  
+def go_back_to_business_information(sb) -> bool:
+    """
+    From the Filing History view, try to click whatever brings us back to the
+    Business Information view (tab/button/link). Returns True on success.
+    """
+    # A few likely selectors for the "Business Information" tab or back button.
+    selectors = [
+        "css=button[ng-click*='BusinessInformation']",
+        "css=button[ng-click*='showBusineInfo']",
+        "css=a[ng-click*='BusinessInformation']",
+        "css=a[ng-click*='showBusineInfo']",
+        "css=li[ng-click*='BusinessInformation'] a",
+        "css=li[ng-click*='showBusineInfo'] a",
+    ]
+    for sel in selectors:
+        try:
+            if sb.is_element_present(sel):
+                sb.click(sel)
+                sb.sleep(4)
+                print(f"[FILING] Clicked Business Information control via selector: {sel}")
+                return True
+        except Exception:
+            pass
+
+    # Fallback: look for any clickable element whose visible text contains
+    # "BUSINESS INFORMATION" (case-insensitive).
+    try:
+        elems = sb.driver.find_elements("css selector", "a, button, li, span")
+        for el in elems:
+            try:
+                text = (el.text or "").strip().upper()
+                if text and "BUSINESS INFORMATION" in text and el.is_displayed():
+                    sb.driver.execute_script("arguments[0].click();", el)
+                    sb.sleep(4)
+                    print("[FILING] Clicked element with text containing 'BUSINESS INFORMATION'")
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
+
+def close_modal(sb) -> bool:
+    """Close the WA 'View Documents' modal reliably."""
+    selectors = [
+        "css=button.close[data-dismiss='modal']",
+        "css=.modal-header .close",
+        "css=.modal-content .close",
+        "css=button.close",
+    ]
+    for sel in selectors:
+        try:
+            if sb.is_element_present(sel):
+                sb.click(sel)
+                sb.sleep(1.5)
+                print(f"[PDF] Closed modal via selector: {sel}")
+                return True
+        except Exception:
+            pass
+    print("[PDF] Failed to close modal using all known selectors.")
+    return False
+
+
 
 def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keyword: bool):
     print(f"\n[===] SCRAPING keyword '{keyword}' (letter {letter}) [===]")
@@ -1019,7 +1856,7 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             # Selection dropdowns
             sb.select_option_by_value("#ddlSelection", "3")   # Starts With
             sb.type("#txtOrgname", keyword)
-            #sb.select_option_by_value("#entityStatus", "1")   # ACTIVE
+            sb.select_option_by_value("#entityStatus", "1")   # ACTIVE
 
             # Click search
             sb.click("#btnSearch")
@@ -1287,67 +2124,67 @@ def scrape_filing_history_and_pdfs(
       1. Click 'Filing History' tab.
       2. Wait 10 seconds for manual Cloudflare solve.
       3. Parse Filing History table.
-      4. For the first <= max_pdfs_per_business filings, download PDFs,
-         parse phone/email/executors, and store in a per-business folder.
+      4. For filings whose Document Type contains 'FULFILLED',
+         open 'View Documents', click the paper icon, download the PDF,
+         parse it, and store it in a per-business folder.
 
     Returns:
       filings: full filing table list[dict]
       pdf_summaries: list[dict] with parsed PDF data for downloaded filings
+
+    NOTE:
+      This function leaves you on the Filing History tab (BI context),
+      then the caller uses click_back_with_cf() to go BI -> Search.
     """
     filings: list = []
     pdf_summaries: list = []
 
+    # 1) Open the Filing History tab from BI
     if not open_filing_history_tab(sb):
+        # We are still on BI; caller's click_back_with_cf() will work as before
         return filings, pdf_summaries
 
     # Give you time to solve any Cloudflare / Turnstile on this tab
     print("[FILING] Waiting 10 seconds for Cloudflare / Filing History to load...")
     sb.sleep(10)
 
-    # Capture Filing History HTML and parse table
+    # 2) Capture Filing History HTML and parse table
     sb.wait_for_element_visible("table.table-striped", timeout=10)
     html_filing = sb.get_page_source()
     filings = parse_filing_history_table(html_filing)
-
-    if not filings:
-        return filings, pdf_summaries
 
     # Prepare folder:
     #   out_dir / 'pdf' / letter / keyword / 'page_{page_idx+1}' / 'bid_{business_id}'
     pdf_root = out_dir / "pdf" / letter / keyword / f"page_{page_idx+1}" / f"bid_{business_id}"
     pdf_root.mkdir(parents=True, exist_ok=True)
 
-    # Download and parse up to max_pdfs_per_business
-    # Download and parse up to max_pdfs_per_business
-    # We'll use the UI flow:
-    #   - Click "View Documents" for each filing row (if present)
-    #   - In the modal, click the paper icon to trigger the PDF download
-    #   - Watch the SeleniumBase downloads folder for a new .pdf
-    #   - Copy that file into our structured pdf_root and parse it
-    #
-    # NOTE: SeleniumBase by default uses a "downloaded_files" directory.
-    # If you've customized this in your environment, adjust download_dir below.
-    download_dir = Path("downloaded_files")
-    download_dir.mkdir(parents=True, exist_ok=True)
+    download_dir = pdf_root
 
+    # Set Chrome download path via CDP
+    try:
+        sb.driver.execute_cdp_cmd(
+            "Page.setDownloadBehavior",
+            {
+                "behavior": "allow",
+                "downloadPath": str(download_dir),
+            },
+        )
+    except Exception as e:
+        print(f"[PDF] Warning: could not set Chrome download path: {e}")
+
+    if not filings:
+        # No filing rows; caller will still call click_back_with_cf()
+        return filings, pdf_summaries
+
+    # 3) Download and parse up to max_pdfs_per_business
     for idx, filing in enumerate(filings[:max_pdfs_per_business]):
         filing_no = (filing.get("filing_number") or "").strip()
         if not filing_no:
             continue
 
-        pdf_path = pdf_root / f"{filing_no}.pdf"
+        pdf_dest = pdf_root / f"{filing_no}.pdf"
 
-        # Snapshot current PDFs so we can detect the new one
-        before_pdfs = set(download_dir.glob("*.pdf"))
-
-        # 1) Open the "View Documents" modal for this filing row
-        # We assume there's one "View Document(s)" link per row.
-
-        # 1) Open the "View Documents" modal for this filing row
-        # Instead of relying on link text, we:
-        #   - Find the Filing History table by its headers (FILING NUMBER / FILING TYPE)
-        #   - Take the row at index 'idx'
-        #   - Click the first clickable element (a/button/icon) in the last "Action" cell
+        # 3a) Open the "View Documents" modal for this filing row
         clicked = False
         try:
             js_open_modal = r"""
@@ -1357,13 +2194,13 @@ if (!tables.length) return false;
 // Find the Filing History table by header text
 var target = null;
 for (var t = 0; t < tables.length; t++) {
-var hdr = tables[t].querySelector("thead");
-if (!hdr) continue;
-var hdrText = (hdr.textContent || "").toUpperCase();
-if (hdrText.includes("FILING NUMBER") && hdrText.includes("FILING TYPE")) {
-    target = tables[t];
-    break;
-}
+    var hdr = tables[t].querySelector("thead");
+    if (!hdr) continue;
+    var hdrText = (hdr.textContent || "").toUpperCase();
+    if (hdrText.includes("FILING NUMBER") && hdrText.includes("FILING TYPE")) {
+        target = tables[t];
+        break;
+    }
 }
 if (!target) return false;
 
@@ -1396,82 +2233,92 @@ return true;
             print(f"[PDF] Could not open 'View Documents' modal for filing {filing_no}.")
             continue
 
-        # 2) Wait for the modal to appear
-        try:
-            sb.wait_for_element_visible("css=.modal-dialog h4", timeout=30)
-            sb.sleep(2)
-        except Exception as e:
-            print(f"[PDF] Modal for 'View Documents' did not appear for filing {filing_no}: {e}")
-            # Try to close anything partial and continue
+        # 3b) Wait for the "View Documents" modal to appear and be visible
+        modal = None
+        for _ in range(45):  # up to ~45 seconds
             try:
-                sb.click("css=.modal-dialog button.close")
+                modal = sb.driver.find_element("css selector", ".modal-dialog")
+                if modal.is_displayed():
+                    break
             except Exception:
                 pass
+            time.sleep(1)
+
+        if not modal or not modal.is_displayed():
+            print(f"[PDF] View Documents modal did not become visible for filing {filing_no}")
+            close_view_documents_modal(sb, timeout=2)
             continue
 
-        except Exception as e:
-            print(f"[PDF] Modal for 'View Documents' did not appear for filing {filing_no}: {e}")
-            # Try to close anything partial and continue
-            try:
-                sb.click("css=.modal-dialog button.close")
-            except Exception:
-                pass
-            continue
-
-        # 3) Click the paper icon inside the modal to trigger the PDF download
+        # 3c) Inside the modal, find the FIRST row whose Document Type contains 'FULFILLED'
+        #     and click its paper icon.
         try:
-            sb.click("css=.modal-dialog i.fa-file-text-o")
+            js_click_fulfilled = r"""
+var modal = document.querySelector(".modal-dialog") || document.querySelector(".searchresult");
+if (!modal) return false;
+var rows = modal.querySelectorAll("tbody tr");
+for (var i = 0; i < rows.length; i++) {
+    var tds = rows[i].querySelectorAll("td");
+    if (tds.length < 3) continue;
+    var docType = (tds[0].textContent || "").toUpperCase();
+    if (!docType.includes("FULFILLED")) continue;
+    var icon = rows[i].querySelector("i.fa-file-text-o");
+    if (!icon) continue;
+    icon.click();
+    return true;
+}
+return false;
+"""
+            # Snapshot existing PDFs BEFORE triggering the download
+            before_files = set(download_dir.glob("*.pdf"))
+
+            ok2 = sb.execute_script(js_click_fulfilled)
+            if not ok2:
+                print(f"[PDF] No 'FULFILLED' document found in modal for filing {filing_no}")
+                close_view_documents_modal(sb, timeout=2)
+                continue
+
+            print(f"[PDF] Clicked paper icon for 'FULFILLED' document in modal for filing {filing_no}")
         except Exception as e:
-            print(f"[PDF] Could not click paper icon in modal for filing {filing_no}: {e}")
-            # Close modal if possible
-            try:
-                sb.click("css=.modal-dialog button.close")
-            except Exception:
-                pass
+            print(f"[PDF] Failed to click 'FULFILLED' paper icon for filing {filing_no}: {e}")
+            close_view_documents_modal(sb, timeout=2)
             continue
 
-        # 4) Wait for a new PDF to appear in the downloads folder
-        new_pdf = wait_for_new_pdf(download_dir, before_pdfs, timeout=90)
-        if not new_pdf:
-            print(f"[PDF] No new PDF detected for filing {filing_no} after clicking paper icon.")
-            # Close modal if still open
-            try:
-                sb.click("css=.modal-dialog button.close")
-            except Exception:
-                pass
+        # 3d) Wait for the new PDF to appear in download_dir
+        new_pdf_path = wait_for_new_pdf(download_dir, before_files, timeout=60)
+        if not new_pdf_path:
+            print(f"[PDF] No new PDF detected for filing {filing_no}")
+            close_view_documents_modal(sb, timeout=2)
             continue
 
-        # 5) Close the modal so we stay on Filing History
-        try:
-            sb.click("css=.modal-dialog button.close")
-            sb.sleep(1)
-        except Exception:
-            # If close fails but we're still on the same page, we can proceed anyway.
-            pass
+        print(f"[PDF] Downloaded PDF: {new_pdf_path}")
 
-        # 6) Copy the downloaded file into our structured pdf_root
+        # 3e) Close modal right after PDF download (best effort)
+        if not close_view_documents_modal(sb, timeout=5):
+            print("[PDF] Could not close modal after download (continuing anyway).")
+
+        # 3f) Move/copy to final target filename in pdf_root
         try:
-            shutil.copy2(new_pdf, pdf_path)
-            print(f"[PDF] Copied downloaded PDF {new_pdf} -> {pdf_path}")
+            pdf_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(new_pdf_path, pdf_dest)
         except Exception as e:
-            print(f"[PDF] Failed to copy downloaded PDF for filing {filing_no}: {e}")
-            continue
+            print(f"[PDF] Warning: could not copy PDF to {pdf_dest}: {e}")
 
-        # 7) Parse the PDF for phone/email/executors
-        parsed = parse_wa_filing_pdf(str(pdf_path))
-        pdf_summaries.append(
-            {
+        # Parse the PDF if it exists
+        if pdf_dest.exists():
+            pdf_info = parse_wa_filing_pdf(str(pdf_dest))
+            pdf_summary = {
                 "filing_number": filing_no,
                 "filing_type": filing.get("filing_type"),
                 "filing_date_time": filing.get("filing_date_time"),
                 "effective_date": filing.get("effective_date"),
-                "pdf_path": str(pdf_path),
-                "phone": parsed.get("phone"),
-                "email": parsed.get("email"),
-                "executors": parsed.get("executors", []),
+                "pdf_path": str(pdf_dest),
+                "phone": pdf_info.get("phone"),
+                "email": pdf_info.get("email"),
+                "executors": pdf_info.get("executors", []),
             }
-        )
+            pdf_summaries.append(pdf_summary)
 
+    # Leave caller on Filing History; click_back_with_cf() will do the navigation.
     return filings, pdf_summaries
 
 def run_letter(letter="A", out_dir="./output_wa_combined", headless=False):
@@ -1577,10 +2424,10 @@ def run_letter(letter="A", out_dir="./output_wa_combined", headless=False):
 if __name__ == "__main__":
     # Usage:
     #   python3 wa_search_sb_local21.py A
-    # If no arg, default to 'A'
+    # If no arg, defahtml_detail = sb.get_page_source()ult to 'A'
     if len(sys.argv) > 1:
         letter_arg = sys.argv[1]
     else:
         letter_arg = "A2"
 
-    run_letter(letter_arg, out_dir="./output_wa_pdf7", headless=False)
+    run_letter(letter_arg, out_dir="./output_wa_pdf34", headless=False)
