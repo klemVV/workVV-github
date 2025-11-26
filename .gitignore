@@ -6,3 +6,17 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
+.csv
+/wa_scraper/output
+/wa_scraper/output
+/wa_scraper/proxies
+/wa_scraper/proxy
+proxies.txt
+/wa_scraper/screenshots
+/wa_scraper/screenshot
+/wa_scraper/pdf_files
+/wa_scraper/pdf_file
+/wa_scraper/output_wa*
+/wa_scraper/downloaded_files
+/wa_scraper/archive
+/local_proxy_server
