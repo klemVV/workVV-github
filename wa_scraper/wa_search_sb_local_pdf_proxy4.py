@@ -23,6 +23,8 @@ import requests
 import pdfplumber
 import time
 import shutil
+import argparse
+import random
 
 from dotenv import load_dotenv
 from pathlib import Path
@@ -30,6 +32,8 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from seleniumbase import SB
 from selenium.common.exceptions import NoAlertPresentException
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from typing import Iterable
 
 load_dotenv()
 
@@ -37,12 +41,160 @@ ADV_URL = "https://ccfs.sos.wa.gov/#/AdvancedSearch"
 
 # Toggle to enable/disable scraping of details via HTML BusinessInformation page
 FETCH_HTML_DETAILS = True
-PROXY_URL = os.getenv("WEBSHARE_PROXY")
+PROXY_URL = os.environ.get("WEBSHARE_PROXY") or None
+EXC_PROXY_FILE = "exc_proxies.txt"
+TEST_URL = ADV_URL  # or whatever target you prefer
 
 # Directory for keyword files (relative to this script)
 SCRIPT_DIR = Path(__file__).resolve().parent
+LOG_DIR = Path("latest_logs")
 KEYWORDS_DIR = SCRIPT_DIR / "search_keywords"
 
+BASE_DIR = Path("/Users/klemanroy/Github/workVV-github/wa_scraper")
+LOG_DIR = BASE_DIR / "latest_logs"
+DL_DIR = BASE_DIR / "downloaded_files"
+ARCH_DIR = BASE_DIR / "archived_files"
+
+def ensure_log_dir():
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[LOG] Warning: could not create log dir {LOG_DIR}: {e}")
+
+def load_proxies_from_file(path: str) -> list[str]:
+    """
+    Load proxies from a text file, one per line.
+
+    Each line can be either:
+      - full URL:  http://127.0.0.1:9000
+      - or host:port: 127.0.0.1:9000  (we'll prepend http://)
+
+    Lines starting with '#' are ignored.
+    """
+    proxies: list[str] = []
+    p = Path(path)
+    if not p.exists():
+        print(f"[PROXY] Proxy list file not found: {path}")
+        return proxies
+
+    for line in p.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not re.match(r"^https?://", line, flags=re.IGNORECASE):
+            line = "http://" + line
+        proxies.append(line)
+
+    print(f"[PROXY] Loaded {len(proxies)} proxies from {path}")
+    return proxies
+
+def load_excluded_proxies(path: Path) -> set[str]:
+    """
+    Load proxies that previously failed and should never be reused.
+    """
+    if not path.exists():
+        return set()
+    with path.open("r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip() and not line.startswith("#")}
+
+
+def append_bad_proxy(path: Path, proxy: str):
+    """
+    Persist a bad proxy into exc_proxies.txt so we don't reuse it.
+    """
+    proxy = proxy.strip()
+    if not proxy:
+        return
+    with path.open("a", encoding="utf-8") as f:
+        f.write(proxy + "\n")
+
+
+def is_proxy_working(proxy: str, test_url: str = TEST_URL, timeout: int = 10) -> bool:
+    """
+    Quick health check for a proxy using the 'requests' library.
+    We only care that it can reach the site with a non-4xx/5xx status.
+    """
+    proxies = {
+        "http": proxy,
+        "https": proxy,
+    }
+    try:
+        resp = requests.get(test_url, proxies=proxies, timeout=timeout)
+        if 200 <= resp.status_code < 400:
+            # print(f"[PROXY-TEST] OK  -> {proxy} (status {resp.status_code})")
+            return True
+        print(f"[PROXY-TEST] BAD -> {proxy} (status {resp.status_code})")
+        return False
+    except Exception as e:
+        print(f"[PROXY-TEST] ERR -> {proxy}: {e}")
+        return False
+
+
+def assign_proxies_for_batch(
+    all_proxies: list[str],
+    excluded: set[str],
+    keywords: list[str],
+    batch_size: int,
+    exc_file: Path,
+    test_url: str = TEST_URL,
+) -> dict[str, str]:
+    """
+    Given a list of proxies and a list of keywords, assign a UNIQUE,
+    TESTED working proxy to each keyword in the first 'batch_size' keywords.
+
+    - No proxy repeats within the batch.
+    - Proxies that fail the test are appended to exc_file and added to 'excluded'.
+    - If we cannot find enough working proxies, we raise RuntimeError.
+    """
+    # Ensure exc file exists
+    exc_file.touch(exist_ok=True)
+
+    # Candidates = all proxies not in excluded set
+    candidate_proxies = [p for p in all_proxies if p not in excluded]
+
+    if not candidate_proxies:
+        raise RuntimeError("[PROXY] No available proxies (all excluded).")
+
+    batch_keywords = keywords[:batch_size]
+    if not batch_keywords:
+        return {}
+
+    assignments: dict[str, str] = {}
+    used_in_batch: set[str] = set()
+
+    for kw in batch_keywords:
+        proxy_for_kw = None
+
+        while True:
+            remaining = [
+                p for p in candidate_proxies
+                if p not in used_in_batch and p not in excluded
+            ]
+            if not remaining:
+                # We cannot satisfy this batch
+                raise RuntimeError(
+                    f"[PROXY] Not enough working proxies to assign all "
+                    f"{len(batch_keywords)} keywords. "
+                    f"Assigned {len(assignments)} so far."
+                )
+
+            candidate = random.choice(remaining)
+            # print(f"[PROXY] Testing candidate {candidate} for keyword '{kw}'...")
+
+            if is_proxy_working(candidate, test_url=test_url):
+                proxy_for_kw = candidate
+                used_in_batch.add(candidate)
+                break
+            else:
+                # Mark this proxy as bad forever
+                excluded.add(candidate)
+                append_bad_proxy(exc_file, candidate)
+                print(f"[PROXY] Marked as bad and added to {exc_file}: {candidate}")
+
+        assignments[kw] = proxy_for_kw
+        # print(f"[PROXY] Assigned '{kw}' -> {proxy_for_kw}")
+
+    return assignments
 
 # --- Load keywords from letter file ---
 def load_keywords(letter: str):
@@ -63,7 +215,7 @@ def load_keywords(letter: str):
         if kw:
             keywords.append(kw)
 
-    print(f"[INFO] Loaded {len(keywords)} keywords from {txt_path}")
+    # print(f"[INFO] Loaded {len(keywords)} keywords from {txt_path}")
     return keywords
 
 
@@ -105,11 +257,11 @@ def parse_rows(html: str):
         # Fallback: any table with 'table-striped'
         table = soup.select_one("table.table-striped")
     if not table:
-        print("[DEBUG] parse_rows: no table with class 'table-striped' found.")
+        # print("[DEBUG] parse_rows: no table with class 'table-striped' found.")
         return []
 
     trs = table.find_all("tr", attrs={"ng-repeat": True})
-    print(f"[DEBUG] parse_rows: found {len(trs)} <tr ng-repeat> rows in table.")
+    # print(f"[DEBUG] parse_rows: found {len(trs)} <tr ng-repeat> rows in table.")
 
     rows = []
     for tr in trs:
@@ -157,10 +309,10 @@ for (var i = 0; i < anchors.length; i++) {
 """
     try:
         sb.execute_script(js)
-        print("[DEBUG] click_next_js: executed JS to click Next (if present)")
+        # print("[DEBUG] click_next_js: executed JS to click Next (if present)")
         return True   # best-effort; we verify via pager on next loop
     except Exception as e:
-        print(f"[DEBUG] click_next_js error: {e}")
+        # print(f"[DEBUG] click_next_js error: {e}")
         return False
 
 
@@ -183,10 +335,10 @@ for (var i = 0; i < anchors.length; i++) {
 """
     try:
         sb.execute_script(js, page_num)
-        print(f"[DEBUG] click_page_number_js: executed JS to click page {page_num} (if present)")
+        # print(f"[DEBUG] click_page_number_js: executed JS to click page {page_num} (if present)")
         return True
     except Exception as e:
-        print(f"[DEBUG] click_page_number_js error: {e}")
+        # print(f"[DEBUG] click_page_number_js error: {e}")
         return False
 
 
@@ -210,13 +362,13 @@ def ensure_advanced_search(sb) -> bool:
 
         # On results page? Use ReturnToSearch button there
         if sb.is_element_present("#btnReturnToSearch"):
-            print("[NAV] Clicking ReturnToSearch to go back to Advanced Search...")
+            # print("[NAV] Clicking ReturnToSearch to go back to Advanced Search...")
             sb.click("#btnReturnToSearch")
             sb.wait_for_element("#txtOrgname", timeout=10)
             return True
 
         # Fallback: go directly to Advanced Search URL
-        print("[NAV] Neither #txtOrgname nor ReturnToSearch found; re-opening AdvancedSearch URL...")
+        # print("[NAV] Neither #txtOrgname nor ReturnToSearch found; re-opening AdvancedSearch URL...")
         sb.open(ADV_URL)
         sb.sleep(2)
         sb.wait_for_element("#txtOrgname", timeout=10)
@@ -276,17 +428,17 @@ try {
         raw = sb.execute_async_script(js)
         result = json.loads(raw)
     except Exception as e:
-        print(f"[API] get_business_list_via_angular JS/parse error: {e}")
+        # print(f"[API] get_business_list_via_angular JS/parse error: {e}")
         return []
 
     if not result.get("ok"):
-        print(f"[API] get_business_list_via_angular failed: {result.get('error')}")
+        # print(f"[API] get_business_list_via_angular failed: {result.get('error')}")
         return []
 
     data = result.get("data") or []
     if data:
         sample_keys = list(data[0].keys())
-        print(f"[API-DEBUG] Angular businessList[0] keys: {sample_keys}")
+        # print(f"[API-DEBUG] Angular businessList[0] keys: {sample_keys}")
     return data
 
 
@@ -298,13 +450,14 @@ def dismiss_any_alert(sb):
     try:
         alert = sb.driver.switch_to.alert
         text = alert.text
-        print(f"[ALERT] Found alert with text: {text!r}; accepting...")
+        # print(f"[ALERT] Found alert with text: {text!r}; accepting...")
         alert.accept()
     except NoAlertPresentException:
         # No alert to handle
         pass
     except Exception as e:
-        print(f"[ALERT] Error while trying to handle alert: {e}")
+        # print(f"[ALERT] Error while trying to handle alert: {e}")
+        pass
 
 def handle_cloudflare_if_present(sb, context: str = "") -> bool:
     """
@@ -320,16 +473,16 @@ def handle_cloudflare_if_present(sb, context: str = "") -> bool:
     lower = html.lower()
     if "turnstile" in lower or "cloudflare" in lower:
         tag = f" during {context}" if context else ""
-        print(f"[CF] Possible Cloudflare / Turnstile challenge{tag}.")
-        print("[CF] Please switch to the browser window, solve the challenge,")
+        # print(f"[CF] Possible Cloudflare / Turnstile challenge{tag}.")
+        # print("[CF] Please switch to the browser window, solve the challenge,")
         # print("[CF] then press ENTER here to continue.")
         try:
             # input()
-            sb.sleep(5)
+            sb.sleep(8)
         except EOFError:
             # in case there's no stdin (e.g., some environments)
             pass
-        sb.sleep(2)
+        sb.sleep(1)
         return True
 
     return False
@@ -469,7 +622,7 @@ def scrape_pdfs_for_business(
     if not biz_id:
         return [], []
 
-    print(f"[PDF-PASS] Opening BusinessInformation for BusinessID={biz_id}...")
+    # print(f"[PDF-PASS] Opening BusinessInformation for BusinessID={biz_id}...")
 
     opened = open_business_info_for_row(
         sb,
@@ -479,7 +632,7 @@ def scrape_pdfs_for_business(
         context="PDF-PASS",
     )
     if not opened:
-        print(f"[PDF-PASS] Unable to open BI for {biz_id}; skipping PDFs.")
+        # print(f"[PDF-PASS] Unable to open BI for {biz_id}; skipping PDFs.")
         return [], []
 
     # Short pause so Filing History button appears
@@ -502,203 +655,12 @@ def scrape_pdfs_for_business(
         click_back_with_cf(sb, description=f"PDF pass BusinessID={biz_id}")
         dismiss_any_alert(sb)
     except Exception as e:
-        print(f"[PDF-PASS] Warning returning to results after PDFs ({biz_id}): {e}")
+        # print(f"[PDF-PASS] Warning returning to results after PDFs ({biz_id}): {e}")
+        pass
 
     return filings, pdf_summaries
 
 # ---------- open BusinessInformation via Angular & parse HTML ----------
-def fetch_business_information_via_html0(
-    sb,
-    biz_obj,
-    letter,
-    keyword,
-    letter_idx,
-    page_idx,
-    idx,                     # row index within page
-    out_dir: Path,
-    details_dir: Path,
-    first_detail_for_keyword: bool = False,
-):
-    """
-    Opens BusinessInformation via Angular, scrapes Filing History + PDFs ASAP,
-    then saves & parses the Business Information HTML, and returns a record dict.
-    """
-
-    biz_id = biz_obj.get("BusinessID") or biz_obj.get("ID")
-    if not biz_id:
-        return None
-
-    record = {
-        "BusinessID": biz_id,
-        "UBINumber": biz_obj.get("UBINumber"),
-        "BusinessName": biz_obj.get("BusinessName") or biz_obj.get("EntityName"),
-        "BusinessStatus": biz_obj.get("BusinessStatus") or biz_obj.get("Status"),
-        "BusinessType": biz_obj.get("BusinessType") or biz_obj.get("Type"),
-    }
-
-    # --- (Angular agent fallback code stays the same here) ---
-
-    print(f"[DETAIL] Opening BusinessInformation for BusinessID={biz_id}...")
-
-    # --- Angular JS open (unchanged) ---
-    open_js = r"""
-var bid = arguments[0];
-if (typeof angular === "undefined") return JSON.stringify({ok:false, error:"angular not found"});
-var tbody = document.querySelector("tbody[ng-show*='businessList']");
-if (!tbody) return JSON.stringify({ok:false, error:"tbody not found"});
-
-var el = tbody, foundScope = null;
-for (var i=0;i<6 && el;i++){
-    var s = angular.element(el).scope() || angular.element(el).isolateScope();
-    if (s && typeof s.showBusineInfo === "function") { foundScope = s; break; }
-    el = el.parentElement;
-}
-if (!foundScope) return JSON.stringify({ok:false, error:"showBusineInfo not found"});
-
-try { foundScope.showBusineInfo(bid); foundScope.$applyAsync(); return JSON.stringify({ok:true}); }
-catch(e){ return JSON.stringify({ok:false, error:String(e)}); }
-"""
-    try:
-        raw = sb.execute_script(open_js, biz_id)
-        result = json.loads(raw) if isinstance(raw, str) else raw
-        if not result.get("ok"):
-            print(f"[DETAIL] Failed to open BI for {biz_id}: {result.get('error')}")
-            return None
-    except Exception as e:
-        print(f"[DETAIL] JS error calling showBusineInfo: {e}")
-        return None
-
-    # --- Wait for BI container to appear ---
-    timeout = 10 if first_detail_for_keyword else 5
-    try:
-        sb.wait_for_element("#divBusinessInformation", timeout=timeout)
-        dismiss_any_alert(sb)
-    except Exception:
-        # First attempt failed; maybe Cloudflare popped here
-        if handle_cloudflare_if_present(sb, context=f"BI pass BI load for {biz_id}"):
-            try:
-                sb.wait_for_element("#divBusinessInformation", timeout=20)
-                dismiss_any_alert(sb)
-            except Exception:
-                print(
-                    f"[DETAIL] (BI-PASS) BI container still not visible for {biz_id} "
-                    f"after Cloudflare handling."
-                )
-                return None
-        else:
-            print(f"[DETAIL] (BI-PASS) BI container not visible for {biz_id}")
-            return None
-
-    # Clear any alert
-    dismiss_any_alert(sb)
-
-    # ------------------------------------------------------------------
-    # 🔴 NEW ORDER: Go to Filing History + PDFs *immediately*,
-    # BEFORE waiting for Business Name to settle
-    # ------------------------------------------------------------------
-    filings, pdf_summaries = scrape_filing_history_and_pdfs(
-        sb=sb,
-        letter=letter,
-        keyword=keyword,
-        page_idx=page_idx,
-        biz_index=idx,
-        business_id=biz_id,
-        out_dir=out_dir,
-        max_pdfs_per_business=3,
-    )
-
-    # At this point, scrape_filing_history_and_pdfs() should have brought us
-    # back to the Business Information view.
-    dismiss_any_alert(sb)
-
-    # ---------------------------------------------------------
-    # RE-WAIT: ensure Business Information is fully reloaded
-    # after coming back from Filing History
-    # ---------------------------------------------------------
-    try:
-        # Make sure the BI panel is visible again
-        sb.wait_for_element("#divBusinessInformation", timeout=10)
-    except Exception:
-        print(f"[DETAIL] BI panel not visible after Filing History for {biz_id}")
-        # We can still attempt to scrape, but it may be incomplete
-
-    # Now wait for Business Name or key text to appear
-    name_js = r"""
-var el = document.querySelector("#divBusinessInformation strong[data-ng-bind*='BusinessName']");
-return el ? (el.textContent||"").trim() : "";
-"""
-    name = ""
-    polls = 15 if first_detail_for_keyword else 8
-    for _ in range(polls):
-        try:
-            name = (sb.execute_script(name_js) or "").strip()
-        except Exception:
-            name = ""
-        if name:
-            break
-        sb.sleep(1)
-
-    # Optional: small extra buffer for other BI fields (agent, addresses, etc.)
-    sb.sleep(2)
-
-    # --- Ensure BI is fully back and bound AFTER Filing History ---
-    try:
-        # 1) Wait for the BI container to be visible again
-        sb.wait_for_element("#divBusinessInformation", timeout=10)
-    except Exception:
-        print(f"[DETAIL] Warning: BI container not visible after Filing History for {biz_id}")
-
-    # 2) Give Angular a bit of time to re-bind fields
-    sb.sleep(2)
-
-    # 3) Re-poll the Business Name so we don't grab a half-loaded page
-    expected_name = (record.get("BusinessName") or "").strip()
-    refreshed_name = ""
-    for _ in range(10):
-        try:
-            refreshed_name = (sb.execute_script(name_js) or "").strip()
-        except Exception:
-            refreshed_name = ""
-
-        if refreshed_name:
-            # Optionally sanity-check it against the Angular name
-            if expected_name and expected_name.lower() not in refreshed_name.lower():
-                print(f"[DETAIL] Note: BI name mismatch after FH for {biz_id}: "
-                      f"expected ~'{expected_name}', got '{refreshed_name}'")
-            break
-
-        sb.sleep(1)
-
-    # --- Save BI HTML AFTER Filing History is done ---
-    html_detail = sb.get_page_source()
-    safe_kw = sanitize_for_filename(keyword)
-    html_path = details_dir / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(html_detail, encoding="utf-8")
-
-    # --- Parse BI HTML ---
-    detail_parsed = parse_business_information_html(html_detail)
-    if detail_parsed is None:
-        print(f"[DETAIL] parse_business_information_html() returned None for BusinessID={biz_id}.")
-    else:
-        print(f"[DETAIL] Parsed {len(detail_parsed)} BI fields for BusinessID={biz_id}")
-
-    # --- Fill record ---
-    record["BusinessInformationHTMLPath"] = str(html_path)
-    record["BusinessInformationHTML"] = detail_parsed
-    record["FilingHistoryRecords"] = filings
-    record["PDFSummaries"] = pdf_summaries
-    record["PDFDownloadedCount"] = len(pdf_summaries)
-
-    # --- Back to search results ---
-    try:
-        click_back_with_cf(sb, description=f"BusinessID={biz_id}")
-        dismiss_any_alert(sb)
-    except Exception as e:
-        print(f"[DETAIL] Warning returning to results ({biz_id}): {e}")
-
-    return record
-
 def fetch_business_information_via_html(
     sb,
     biz_obj,
@@ -729,7 +691,7 @@ def fetch_business_information_via_html(
     }
     expected_name = (record["BusinessName"] or "").strip()
 
-    print(f"[DETAIL] (BI-PASS) Opening BusinessInformation for BusinessID={biz_id}...")
+    # print(f"[DETAIL] (BI-PASS) Opening BusinessInformation for BusinessID={biz_id}...")
 
     opened = open_business_info_for_row(
         sb,
@@ -739,7 +701,7 @@ def fetch_business_information_via_html(
         context="BI-PASS",
     )
     if not opened:
-        print(f"[DETAIL] (BI-PASS) BI container not visible for {biz_id} after attempts.")
+        # print(f"[DETAIL] (BI-PASS) BI container not visible for {biz_id} after attempts.")
         return None
 
 
@@ -765,9 +727,10 @@ try {
     try:
         raw = sb.execute_script(open_js, biz_id)
         if raw != "OK":
-            print(f"[DETAIL] (BI-PASS) Warning: showBusineInfo returned {raw} for {biz_id}")
+            # print(f"[DETAIL] (BI-PASS) Warning: showBusineInfo returned {raw} for {biz_id}")
+            pass
     except Exception as e:
-        print(f"[DETAIL] (BI-PASS) Error executing Angular showBusineInfo for {biz_id}: {e}")
+        # print(f"[DETAIL] (BI-PASS) Error executing Angular showBusineInfo for {biz_id}: {e}")
         return None
 
     # Wait for BI container
@@ -776,7 +739,7 @@ try {
         sb.wait_for_element("#divBusinessInformation", timeout=timeout)
         dismiss_any_alert(sb)
     except Exception:
-        print(f"[DETAIL] (BI-PASS) BI container not visible for {biz_id}")
+        # print(f"[DETAIL] (BI-PASS) BI container not visible for {biz_id}")
         return None
 
     # Wait for Business Name text to show and roughly match expected
@@ -799,34 +762,37 @@ return el ? (el.textContent||"").trim() : "";
         sb.sleep(1.0)
 
     if not actual_name:
-        print(f"[DETAIL] (BI-PASS) Business Name still empty for {biz_id}")
+        # print(f"[DETAIL] (BI-PASS) Business Name still empty for {biz_id}")
+        pass
     else:
         if expected_name and expected_name.lower() not in actual_name.lower():
-            print(
-                f"[DETAIL] (BI-PASS) Name mismatch for {biz_id}: "
-                f"expected ~'{expected_name}', got '{actual_name}'"
-            )
+            # print(
+            #     f"[DETAIL] (BI-PASS) Name mismatch for {biz_id}: "
+            #     f"expected ~'{expected_name}', got '{actual_name}'"
+            # )
+            pass
 
     # ---- Save & parse BI HTML in this clean state ----
     try:
         safe_kw = sanitize_for_filename(keyword)
         html_detail = sb.get_page_source()
-        html_path = (
-            details_dir
-            / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
-        )
-        html_path.parent.mkdir(parents=True, exist_ok=True)
-        html_path.write_text(html_detail, encoding="utf-8")
-
+        
+        # html_path = (
+        #     details_dir
+        #     / f"bi_html_{letter}_{safe_kw}_p{page_idx+1}_r{idx+1}_bid_{biz_id}.html"
+        # )
+        # html_path.parent.mkdir(parents=True, exist_ok=True)
+        # html_path.write_text(html_detail, encoding="utf-8")
+        
         detail_parsed = parse_business_information_html(html_detail)
-        print(
-            f"[DETAIL] (BI-PASS) Parsed {len(detail_parsed.keys())} BI fields for BusinessID={biz_id}"
-        )
+        # print(
+        #     f"[DETAIL] (BI-PASS) Parsed {len(detail_parsed.keys())} BI fields for BusinessID={biz_id}"
+        # )
     except Exception as e:
-        print(f"[DETAIL] (BI-PASS) Error saving/parsing BI HTML for {biz_id}: {e}")
+        # print(f"[DETAIL] (BI-PASS) Error saving/parsing BI HTML for {biz_id}: {e}")
         detail_parsed = {}
 
-    record["BusinessInformationHTMLPath"] = str(html_path)
+    # record["BusinessInformationHTMLPath"] = str(html_path)
     record["BusinessInformationHTML"] = detail_parsed
 
     # These will be merged from the PDF pass in scrape_keyword, not here
@@ -839,7 +805,8 @@ return el ? (el.textContent||"").trim() : "";
         click_back_with_cf(sb, description=f"BI pass BusinessID={biz_id}")
         dismiss_any_alert(sb)
     except Exception as e:
-        print(f"[DETAIL] (BI-PASS) Warning returning to results ({biz_id}): {e}")
+        # print(f"[DETAIL] (BI-PASS) Warning returning to results ({biz_id}): {e}")
+        pass
 
     return record
 
@@ -972,11 +939,16 @@ def parse_wa_filing_pdf(pdf_path: str) -> dict:
         'executors': [...]
       }
     """
+    p = Path(pdf_path)
+    if not is_valid_pdf(p):
+        # print(f"[PDF] Skipping invalid PDF in parse_wa_filing_pdf: {pdf_path}")
+        return {"phone": None, "email": None, "executors": []}
+    
     try:
         with pdfplumber.open(pdf_path) as pdf:
             texts = [(p.extract_text() or "") for p in pdf.pages]
     except Exception as e:
-        print(f"[PDF] Failed to open {pdf_path}: {e}")
+        # print(f"[PDF] Failed to open {pdf_path}: {e}")
         return {"phone": None, "email": None, "executors": []}
 
     full_text = "\n".join(texts)
@@ -1005,13 +977,13 @@ def open_filing_history_tab(sb) -> bool:
     for sel in selectors:
         try:
             sb.wait_for_element_visible(sel, timeout=5)
-            print(f"[FILING] Clicking Filing History via selector: {sel}")
+            # print(f"[FILING] Clicking Filing History via selector: {sel}")
             sb.click(sel)
             return True
         except Exception:
             continue
 
-    print("[FILING] Filing History tab not found/visible.")
+    # print("[FILING] Filing History tab not found/visible.")
     return False
 
 
@@ -1042,7 +1014,7 @@ def parse_filing_history_table(html: str) -> list:
             break
 
     if target_table is None:
-        print("[FILING] Filing History table not found.")
+        # print("[FILING] Filing History table not found.")
         return filings
 
     for tr in target_table.select("tbody tr"):
@@ -1087,29 +1059,30 @@ def download_pdf_for_filing(sb, filing_number: str, save_path: str) -> bool:
     try:
         resp = session.get(pdf_url, headers=headers, timeout=90)
     except Exception as e:
-        print(f"[PDF] Request failed for filing {filing_number}: {e}")
+        # print(f"[PDF] Request failed for filing {filing_number}: {e}")
         return False
 
     if resp.status_code != 200:
-        print(
-            f"[PDF] Non-200 status ({resp.status_code}) for filing {filing_number}"
-        )
+        # print(
+        #     f"[PDF] Non-200 status ({resp.status_code}) for filing {filing_number}"
+        # )
         return False
 
     # Quick content-type sanity check
     ctype = (resp.headers.get("Content-Type") or "").lower()
     if "pdf" not in ctype:
-        print(
-            f"[PDF] Filing {filing_number} content is not PDF (Content-Type={ctype})"
-        )
+        # print(
+        #     f"[PDF] Filing {filing_number} content is not PDF (Content-Type={ctype})"
+        # )
+        pass
 
     try:
         with open(save_path, "wb") as f:
             f.write(resp.content)
-        print(f"[PDF] Saved filing {filing_number} to {save_path}")
+        # print(f"[PDF] Saved filing {filing_number} to {save_path}")
         return True
     except Exception as e:
-        print(f"[PDF] Failed to write PDF {save_path}: {e}")
+        # print(f"[PDF] Failed to write PDF {save_path}: {e}")
         return False
 
 def close_view_documents_modal(sb, timeout=5):
@@ -1167,448 +1140,6 @@ def close_view_documents_modal(sb, timeout=5):
 
     return True
   
-def click_back_with_cf1(sb, description: str = ""):
-    """
-    Return from:
-       - View Documents modal  -> Filing History
-       - Filing History        -> Business Information
-       - Business Information  -> Business Search results table
-
-    Handles Cloudflare/Turnstile if needed, but does NOT use window.history.back()
-    anymore (to avoid overshooting past the results list).
-
-    description: optional label for logging (e.g. 'BusinessID=123').
-    """
-
-    RESULTS_SELECTORS = [
-        "css=tbody[ng-show*='businessList'] tr",     # tbody with ng-show on businessList
-        "css=tbody tr[ng-repeat*='business']",       # rows in results table
-    ]
-
-    def close_view_documents_modal_if_open():
-        """Close the 'View Documents' modal if it is still open."""
-        try:
-            # any open modal-dialog
-            if sb.is_element_present("css=.modal-dialog"):
-                print("[NAV] Modal detected; attempting to close it.")
-                # preferred close button for this modal
-                try:
-                    sb.click("css=button.close[data-dismiss='modal']")
-                    sb.sleep(1)
-                    return
-                except Exception:
-                    pass
-                # fallback close buttons inside modal
-                try:
-                    sb.click("css=#divSearchResult button.close")
-                    sb.sleep(1)
-                    return
-                except Exception:
-                    pass
-                try:
-                    sb.click("css=.modal-content .close")
-                    sb.sleep(1)
-                    return
-                except Exception:
-                    pass
-                print("[NAV] WARNING: Could not close modal via known selectors.")
-        except Exception as e:
-            print(f"[NAV] Error while checking/closing modal: {e}")
-
-    def wait_for_results_grid(label: str) -> bool:
-        """Best-effort: check if the results table appears. No extra navigation."""
-        for sel in RESULTS_SELECTORS:
-            try:
-                if sb.is_element_present(sel):
-                    print(f"[NAV] Results grid detected after {label} via selector: {sel}")
-                    return True
-            except Exception:
-                pass
-        return False
-
-    try:
-        if description:
-            print(f"[NAV] Returning to results ({description})...")
-
-        # --- 0) If a 'View Documents' modal is open, close it first ---
-        close_view_documents_modal_if_open()
-
-        # --- 1) If there's a Cloudflare / Turnstile challenge, give user time ---
-        # Note: this site uses a <cf-turnstile> widget; the visible wrapper has class 'cf-turnstile'.
-        if sb.is_element_present("css=.cf-turnstile") or sb.is_element_present("css=#cf-challenge"):
-            print("[NAV] Cloudflare / Turnstile challenge detected while returning.")
-            print("[NAV] Please solve it in the browser; waiting up to 5 minutes...")
-            for _ in range(300):  # up to ~5 minutes
-                if not (sb.is_element_present("css=.cf-turnstile") or
-                        sb.is_element_present("css=#cf-challenge")):
-                    break
-                time.sleep(1)
-
-        # --- 2) If we're on Filing History, click 'Back to Business Information' ---
-        # That button only exists on the Filing History view.
-        try:
-            if sb.is_element_present("css=button[ng-click*='showBusineInfo']"):
-                print("[NAV] On Filing History: clicking 'Back to Business Information'.")
-                sb.click("css=button[ng-click*='showBusineInfo']")
-                sb.sleep(8)  # allow BI to load
-            else:
-                print("[NAV] No 'Back to Business Information' button found; likely not on Filing History.")
-        except Exception as e:
-            print(f"[NAV] Error clicking 'Back to Business Information': {e}")
-
-        # --- 3) From Business Information, click 'Return to Business Search' ---
-        # On BI, this is the button that takes you back to the results list.
-        try:
-            if sb.is_element_present("css=#btnReturnToSearch"):
-                print("[NAV] On BI: clicking 'Return to Business Search'.")
-                sb.click("css=#btnReturnToSearch")
-                sb.sleep(8)
-            else:
-                print("[NAV] '#btnReturnToSearch' not found on this view.")
-        except Exception as e:
-            print(f"[NAV] Error clicking '#btnReturnToSearch': {e}")
-
-        # --- 4) Cloudflare/Turnstile might appear again after navigation ---
-        if sb.is_element_present("css=.cf-turnstile") or sb.is_element_present("css=#cf-challenge"):
-            print("[NAV] Cloudflare / Turnstile detected after navigation.")
-            print("[NAV] Please solve it in the browser; waiting up to 5 minutes...")
-            for _ in range(300):
-                if not (sb.is_element_present("css=.cf-turnstile") or
-                        sb.is_element_present("css=#cf-challenge")):
-                    break
-                time.sleep(1)
-
-        # --- 5) Best-effort check: are we back on the results list? ---
-        if not wait_for_results_grid("click_back_with_cf()"):
-            print("[NAV] WARNING: Results grid not detected, but NOT calling history.back(). "
-                  "Continuing from current page anyway.")
-        else:
-            print("[NAV] Back on results list; navigation complete.")
-
-        return True
-
-    except Exception as e:
-        print(f"[NAV] Unexpected error in click_back_with_cf(): {e}")
-        return False
-
-def click_back_with_cf2(sb, description: str = ""):
-    """
-    Robust navigation back to the BusinessSearch results grid.
-
-    Handles, in order:
-      - If a "View Documents" modal is open, close it.
-      - Cloudflare challenge (waits for manual solve if present).
-      - Uses up to 3 history steps and/or Return button to get back
-        to the results list, checking the grid after each step.
-
-    This function is designed to be safe whether you call it from:
-      - Filing History (after downloading PDFs), or
-      - Business Information, or
-      - Already on the search results.
-    """
-
-    # --- Helpers -----------------------------------------------------------
-    RESULTS_SELECTORS = [
-        "css=tbody[ng-show*='businessList'] tr",   # original working selector
-        "css=tbody tr[ng-repeat*='business']",     # rows in results table
-        "css=table.table-striped tbody tr[ng-repeat]",  # generic Angular rows
-    ]
-
-    def results_visible(label: str = "") -> bool:
-        """Check if the BusinessSearch results grid is present."""
-        for sel in RESULTS_SELECTORS:
-            try:
-                sb.wait_for_element(sel, timeout=3)
-                if label:
-                    print(f"[NAV] Results grid detected ({label}) via selector: {sel}")
-                else:
-                    print(f"[NAV] Results grid detected via selector: {sel}")
-                return True
-            except Exception:
-                continue
-        return False
-
-    def close_any_modal():
-        """If a modal (like 'View Documents') is open, close it."""
-        try:
-            # Most accurate selector for the X button you showed:
-            if sb.is_element_present("css=button.close[data-dismiss='modal']"):
-                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
-                sb.click("css=button.close[data-dismiss='modal']")
-                sb.sleep(2)
-                return
-
-            # Fallback: any close button inside a visible modal
-            if sb.is_element_present("css=.modal-dialog .close"):
-                print("[NAV] Closing modal via .modal-dialog .close.")
-                sb.click("css=.modal-dialog .close")
-                sb.sleep(2)
-                return
-
-            # Extra fallback: click backdrop (if any)
-            if sb.is_element_present("css=.modal-backdrop"):
-                print("[NAV] Clicking modal backdrop as last-resort close.")
-                sb.click("css=.modal-backdrop")
-                sb.sleep(2)
-        except Exception as e:
-            print(f"[NAV] Warning: error while trying to close modal: {e}")
-
-    def handle_cloudflare(context: str):
-        """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
-        try:
-            if sb.is_element_present("css=#cf-challenge") or sb.is_element_present("css=.cf-challenge"):
-                print(f"[NAV] Cloudflare challenge detected ({context}).")
-                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
-                for _ in range(300):
-                    if not (
-                        sb.is_element_present("css=#cf-challenge")
-                        or sb.is_element_present("css=.cf-challenge")
-                    ):
-                        print("[NAV] Cloudflare challenge cleared.")
-                        break
-                    time.sleep(1)
-        except Exception as e:
-            print(f"[NAV] Warning while checking Cloudflare: {e}")
-
-    # --- Main logic --------------------------------------------------------
-    if description:
-        print(f"[NAV] Returning to results ({description})...")
-
-    # Step 0: if a modal is open, close it first
-    if sb.is_element_present("css=.modal-dialog"):
-        print("[NAV] Modal detected while returning to results; closing it first.")
-        close_any_modal()
-        sb.sleep(1)
-
-    # If we are already on the results page, just confirm and return
-    if results_visible("initial check"):
-        return True
-
-    # We'll try up to 3 navigation steps to get back
-    for step in range(2):
-        handle_cloudflare(f"before nav step {step+1}")
-
-        # If after Cloudflare we already see results, we're done
-        if results_visible(f"after Cloudflare step {step+1}"):
-            return True
-
-        # Prefer the explicit "Return to Business Search" button if present
-        try:
-            if sb.is_element_present("css=#btnReturnToSearch"):
-                print("[NAV] Clicking '#btnReturnToSearch' to go back to results.")
-                sb.click("css=#btnReturnToSearch")
-                sb.sleep(6)
-
-                if results_visible(f"after #btnReturnToSearch (step {step+1})"):
-                    return True
-                # If not, continue to next loop iteration
-                continue
-        except Exception as e:
-            print(f"[NAV] Warning clicking #btnReturnToSearch: {e}")
-
-        # Otherwise, rely on browser history
-        try:
-            print(f"[NAV] Using window.history.back() (step {step+1}).")
-            sb.driver.execute_script("window.history.back()")
-            sb.sleep(15)
-        except Exception as e:
-            print(f"[NAV] Warning calling window.history.back(): {e}")
-
-        # Check if we are back on results after this history step
-        if results_visible(f"after history.back() (step {step+1})"):
-            return True
-
-    # Final check after all attempts
-    if results_visible("final check"):
-        return True
-
-    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
-    return False
-
-def click_back_with_cf3(sb, description: str = ""):
-    """
-    Robust navigation back to the BusinessSearch results grid.
-
-    Handles, in order:
-      - If a "View Documents" modal is open, close it.
-      - Cloudflare challenge (waits for manual solve if present).
-      - Uses Filing History "Back to Business Information",
-        Business Information "Return to Business Search",
-        and finally window.history.back() as fallback.
-
-    It is safe to call this when:
-      - On Filing History (after PDFs),
-      - On Business Information,
-      - Already on BusinessSearch results.
-
-    It will NOT keep calling history.back() once the results
-    grid is detected on the BusinessSearch route.
-    """
-
-    # --- Helper selectors / route checks -----------------------------------
-    RESULTS_SELECTORS = [
-        "css=tbody[ng-show*='businessList'] tr",     # original working selector
-        "css=tbody tr[ng-repeat*='business']",       # rows in results table
-        "css=table.table-striped tbody tr[ng-repeat]"  # generic Angular rows
-    ]
-
-    def get_url() -> str:
-        try:
-            return sb.driver.current_url or ""
-        except Exception:
-            return ""
-
-    def is_on_results_page() -> bool:
-        """We only treat it as 'results' if URL has BusinessSearch AND grid present."""
-        url = get_url()
-        if "BusinessSearch" not in url:
-            return False
-        for sel in RESULTS_SELECTORS:
-            try:
-                sb.wait_for_element(sel, timeout=3)
-                print(f"[NAV] Results grid detected on BusinessSearch via selector: {sel}")
-                return True
-            except Exception:
-                continue
-        return False
-
-    def is_on_bi_page() -> bool:
-        """Heuristic: BI route + 'Return to Business Search' button."""
-        url = get_url()
-        if "BusinessInformation" not in url:
-            return False
-        return sb.is_element_present("css=#btnReturnToSearch")
-
-    def is_on_filing_history_page() -> bool:
-        """
-        Heuristic: presence of Filing History 'Back to Business Information' button.
-        The same button exists only on Filing History tab.
-        """
-        return sb.is_element_present("css=button[ng-click*='showBusineInfo']")
-
-    def close_any_modal():
-        """If a modal (like 'View Documents') is open, close it via the X button."""
-        try:
-            # Most accurate selector for the X button you showed:
-            if sb.is_element_present("css=button.close[data-dismiss='modal']"):
-                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
-                sb.click("css=button.close[data-dismiss='modal']")
-                sb.sleep(2)
-                return
-
-            # Fallback: any close button inside a visible modal
-            if sb.is_element_present("css=.modal-dialog .close"):
-                print("[NAV] Closing modal via .modal-dialog .close.")
-                sb.click("css=.modal-dialog .close")
-                sb.sleep(2)
-                return
-
-            # Extra fallback: click backdrop (if any)
-            if sb.is_element_present("css=.modal-backdrop"):
-                print("[NAV] Clicking modal backdrop as last-resort close.")
-                sb.click("css=.modal-backdrop")
-                sb.sleep(2)
-        except Exception as e:
-            print(f"[NAV] Warning: error while trying to close modal: {e}")
-
-    def handle_cloudflare(context: str):
-        """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
-        try:
-            if sb.is_element_present("css=#cf-challenge") or sb.is_element_present("css=.cf-challenge"):
-                print(f"[NAV] Cloudflare challenge detected ({context}).")
-                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
-                for _ in range(300):
-                    if not (
-                        sb.is_element_present("css=#cf-challenge")
-                        or sb.is_element_present("css=.cf-challenge")
-                    ):
-                        print("[NAV] Cloudflare challenge cleared.")
-                        break
-                    time.sleep(1)
-        except Exception as e:
-            print(f"[NAV] Warning while checking Cloudflare: {e}")
-
-    # --- Main logic --------------------------------------------------------
-    if description:
-        print(f"[NAV] Returning to results ({description})...")
-
-    # Step 0: if a modal is open, close it first
-    if sb.is_element_present("css=.modal-dialog"):
-        print("[NAV] Modal detected while returning to results; closing it first.")
-        close_any_modal()
-        sb.sleep(1)
-
-    # Early exit: if we are already on the results page, just confirm and return
-    if is_on_results_page():
-        return True
-
-    # We will attempt up to 3 navigation actions total
-    for step in range(3):
-        handle_cloudflare(f"before nav step {step+1}")
-
-        # If after Cloudflare we already see the results, we're done
-        if is_on_results_page():
-            return True
-
-        # 1) If we are on Filing History, go BI via "Back to Business Information"
-        if is_on_filing_history_page():
-            print("[NAV] On Filing History: clicking 'Back to Business Information'.")
-            try:
-                sb.click("css=button[ng-click*='showBusineInfo']")
-                sb.sleep(6)
-            except Exception as e:
-                print(f"[NAV] Warning clicking 'Back to Business Information': {e}")
-            # After this click we should be on BI; continue loop to handle BI -> Search.
-            continue
-
-        # 2) If we are on Business Information, prefer the explicit "Return" button
-        if is_on_bi_page():
-            print("[NAV] On Business Information: clicking '#btnReturnToSearch'.")
-            try:
-                sb.click("css=#btnReturnToSearch")
-                sb.sleep(6)
-            except Exception as e:
-                print(f"[NAV] Warning clicking #btnReturnToSearch: {e}")
-            # After this we expect BusinessSearch; re-check in next iteration
-            if is_on_results_page():
-                return True
-            continue
-
-        # 3) If neither Filing History nor BI heuristics match, but we end up
-        #    on BusinessSearch route without grid yet, give it some time.
-        url = get_url()
-        if "BusinessSearch" in url:
-            print("[NAV] On BusinessSearch route but grid not yet visible; waiting briefly.")
-            sb.sleep(4)
-            if is_on_results_page():
-                return True
-            # If still no grid, fall through to history.back() as a last resort.
-
-        # 4) Last resort: use browser history to go back exactly one step
-        print(f"[NAV] Using window.history.back() (step {step+1}).")
-        try:
-            sb.driver.execute_script("window.history.back()")
-            sb.sleep(8)
-        except Exception as e:
-            print(f"[NAV] Warning calling window.history.back(): {e}")
-
-        # After history, if we are on results page, stop immediately.
-        if is_on_results_page():
-            return True
-
-        # If we find ourselves on AdvancedSearch, do NOT go back further.
-        url_after = get_url()
-        if "AdvancedSearch" in url_after:
-            print("[NAV] Reached AdvancedSearch page; stopping further back navigation.")
-            break
-
-    # Final check after all attempts
-    if is_on_results_page():
-        return True
-
-    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
-    return False
-
 def click_back_with_cf(sb, description: str = ""):
     """
     Robust navigation back to the BusinessSearch results grid.
@@ -1651,7 +1182,7 @@ def click_back_with_cf(sb, description: str = ""):
             "businessList.length  &gt; 0"  # ng-show on tbody :contentReference[oaicite:4]{index=4}
         ]
         if any(m in html for m in markers):
-            print("[NAV] Detected Business Search RESULTS page.")
+            # print("[NAV] Detected Business Search RESULTS page.")
             return True
         return False
 
@@ -1682,30 +1213,31 @@ def click_back_with_cf(sb, description: str = ""):
         """If a modal (like 'View Documents') is open, close it."""
         try:
             if sb.is_element_present("css=button.close[data-dismiss='modal']"):
-                print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
+                # print("[NAV] Closing modal via button.close[data-dismiss='modal'].")
                 sb.click("css=button.close[data-dismiss='modal']")
                 sb.sleep(2)
                 return
 
             if sb.is_element_present("css=.modal-dialog .close"):
-                print("[NAV] Closing modal via .modal-dialog .close.")
+                # print("[NAV] Closing modal via .modal-dialog .close.")
                 sb.click("css=.modal-dialog .close")
                 sb.sleep(2)
                 return
 
             if sb.is_element_present("css=.modal-backdrop"):
-                print("[NAV] Clicking modal backdrop as last-resort close.")
+                # print("[NAV] Clicking modal backdrop as last-resort close.")
                 sb.click("css=.modal-backdrop")
                 sb.sleep(2)
         except Exception as e:
-            print(f"[NAV] Warning: error while trying to close modal: {e}")
+            # print(f"[NAV] Warning: error while trying to close modal: {e}")
+            pass
 
     def handle_cloudflare(context: str):
         """Wait (up to ~5 minutes) if a Cloudflare challenge is present."""
         try:
             if sb.is_element_present("css=#cf-chl-widget") or sb.is_element_present("css=.cf-turnstile"):
-                print(f"[NAV] Cloudflare Turnstile detected ({context}).")
-                print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
+                # print(f"[NAV] Cloudflare Turnstile detected ({context}).")
+                # print("[NAV] Please solve it in the browser; I'll wait up to 5 minutes.")
                 for _ in range(300):
                     if not (
                         sb.is_element_present("css=#cf-chl-widget")
@@ -1715,15 +1247,17 @@ def click_back_with_cf(sb, description: str = ""):
                         break
                     time.sleep(1)
         except Exception as e:
-            print(f"[NAV] Warning while checking Cloudflare: {e}")
+            # print(f"[NAV] Warning while checking Cloudflare: {e}")
+            pass
 
     # --- Main logic --------------------------------------------------------
     if description:
-        print(f"[NAV] Returning to results ({description})...")
+        # print(f"[NAV] Returning to results ({description})...")
+        pass
 
     # Step 0: close any modal (e.g., View Documents)
     if sb.is_element_present("css=.modal-dialog"):
-        print("[NAV] Modal detected while returning to results; closing it first.")
+        # print("[NAV] Modal detected while returning to results; closing it first.")
         close_any_modal()
         sb.sleep(1)
 
@@ -1736,7 +1270,7 @@ def click_back_with_cf(sb, description: str = ""):
     if is_on_business_info():
         try:
             if sb.is_element_present("css=button.btn-back"):
-                print("[NAV] On Business Information; clicking '.btn-back' to go to results.")
+                # print("[NAV] On Business Information; clicking '.btn-back' to go to results.")
                 sb.click("css=button.btn-back")
                 sb.sleep(5)
 
@@ -1745,11 +1279,12 @@ def click_back_with_cf(sb, description: str = ""):
                     if is_on_search_results():
                         return True
                     if reached_advanced_search():
-                        print("[NAV] Landed on AdvancedSearch after '.btn-back'; stopping.")
+                        # print("[NAV] Landed on AdvancedSearch after '.btn-back'; stopping.")
                         return False
                     time.sleep(1)
         except Exception as e:
-            print(f"[NAV] Warning while clicking '.btn-back': {e}")
+            # print(f"[NAV] Warning while clicking '.btn-back': {e}")
+            pass
 
     # Step 3: Fallback – use history.back() a few times, checking after each
     for step in range(3):
@@ -1759,7 +1294,7 @@ def click_back_with_cf(sb, description: str = ""):
         if is_on_search_results():
             return True
         if reached_advanced_search():
-            print("[NAV] Already on AdvancedSearch; not navigating back further.")
+            # print("[NAV] Already on AdvancedSearch; not navigating back further.")
             return False
 
         # Do one history step
@@ -1774,7 +1309,7 @@ def click_back_with_cf(sb, description: str = ""):
         sb.sleep(5)
         '''
 
-        print(f"[NAV] Using window.history.back() (step {step+1}).")
+        # print(f"[NAV] Using window.history.back() (step {step+1}).")
         sb.driver.execute_script("window.history.back()")
 
         # NEW: custom wait depending on step
@@ -1790,7 +1325,7 @@ def click_back_with_cf(sb, description: str = ""):
             if is_on_search_results():
                 return True
             if reached_advanced_search():
-                print("[NAV] Reached AdvancedSearch page; stopping further back navigation.")
+                # print("[NAV] Reached AdvancedSearch page; stopping further back navigation.")
                 return False
             time.sleep(1)
 
@@ -1798,8 +1333,28 @@ def click_back_with_cf(sb, description: str = ""):
     if is_on_search_results():
         return True
 
-    print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
+    # print("[NAV] WARNING: Could not detect results grid after all navigation attempts.")
     return False
+
+def is_valid_pdf(path: Path, min_size: int = 2048) -> bool:
+    """
+    Basic sanity check that 'path' is a real PDF and not an HTML error or a truncated file.
+    - Exists
+    - Size >= min_size bytes (default 2 KB)
+    - Starts with '%PDF'
+    """
+    try:
+        if not path.exists():
+            return False
+        if path.stat().st_size < min_size:
+            return False
+        with path.open("rb") as f:
+            header = f.read(5)
+        if not header.startswith(b"%PDF"):
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def wait_for_new_pdf(download_dir: Path, before_files: set, timeout: int = 60) -> Path | None:
@@ -1836,7 +1391,8 @@ def safe_return_to_results(sb, business_id: str | None = None, filing_no: str | 
 
     ok = click_back_with_cf(sb, description=desc)
     if not ok:
-        print(f"[DETAIL] Warning: could not return to results ({desc}).")
+        # print(f"[DETAIL] Warning: could not return to results ({desc}).")
+        pass
     return ok
   
 def go_back_to_business_information(sb) -> bool:
@@ -1858,7 +1414,7 @@ def go_back_to_business_information(sb) -> bool:
             if sb.is_element_present(sel):
                 sb.click(sel)
                 sb.sleep(4)
-                print(f"[FILING] Clicked Business Information control via selector: {sel}")
+                # print(f"[FILING] Clicked Business Information control via selector: {sel}")
                 return True
         except Exception:
             pass
@@ -1873,7 +1429,7 @@ def go_back_to_business_information(sb) -> bool:
                 if text and "BUSINESS INFORMATION" in text and el.is_displayed():
                     sb.driver.execute_script("arguments[0].click();", el)
                     sb.sleep(4)
-                    print("[FILING] Clicked element with text containing 'BUSINESS INFORMATION'")
+                    # print("[FILING] Clicked element with text containing 'BUSINESS INFORMATION'")
                     return True
             except Exception:
                 continue
@@ -1895,11 +1451,11 @@ def close_modal(sb) -> bool:
             if sb.is_element_present(sel):
                 sb.click(sel)
                 sb.sleep(1.5)
-                print(f"[PDF] Closed modal via selector: {sel}")
+                # print(f"[PDF] Closed modal via selector: {sel}")
                 return True
         except Exception:
             pass
-    print("[PDF] Failed to close modal using all known selectors.")
+    # print("[PDF] Failed to close modal using all known selectors.")
     return False
 
 def open_business_info_for_row(
@@ -1948,9 +1504,11 @@ try {
     try:
         raw = sb.execute_script(open_js, biz_id)
         if raw != "OK":
-            print(f"[OPEN-BI] Warning ({label}): showBusineInfo returned {raw}")
+            # print(f"[OPEN-BI] Warning ({label}): showBusineInfo returned {raw}")
+            pass
     except Exception as e:
-        print(f"[OPEN-BI] Error executing showBusineInfo for {label}: {e}")
+        # print(f"[OPEN-BI] Error executing showBusineInfo for {label}: {e}")
+        pass
 
     timeout = 10 if first_detail_for_keyword else 5
     try:
@@ -1965,30 +1523,32 @@ try {
                 dismiss_any_alert(sb)
                 return True
             except Exception:
-                print(
-                    f"[OPEN-BI] #divBusinessInformation still not visible for {label} "
-                    f"after CF + Angular; trying row-click fallback."
-                )
+                # print(
+                #     f"[OPEN-BI] #divBusinessInformation still not visible for {label} "
+                #     f"after CF + Angular; trying row-click fallback."
+                # )
+                pass
         else:
-            print(
-                f"[OPEN-BI] #divBusinessInformation not visible for {label} "
-                f"after Angular call; trying row-click fallback."
-            )
+            # print(
+            #     f"[OPEN-BI] #divBusinessInformation not visible for {label} "
+            #     f"after Angular call; trying row-click fallback."
+            # )
+            pass
 
     # --- Step 2: Fall back to clicking the row in the table ---
     try:
         tbl = sb.find_element("css selector", "table.table-striped")
         rows = tbl.find_elements("css selector", "tbody tr")
         if not rows:
-            print(f"[OPEN-BI] No rows found in table for {label}; cannot row-click.")
+            # print(f"[OPEN-BI] No rows found in table for {label}; cannot row-click.")
             return False
 
         # row_index is 0-based in our calls
         if row_index < 0 or row_index >= len(rows):
-            print(
-                f"[OPEN-BI] row_index={row_index} out of range "
-                f"(len={len(rows)}) for {label}; cannot row-click."
-            )
+            # print(
+            #     f"[OPEN-BI] row_index={row_index} out of range "
+            #     f"(len={len(rows)}) for {label}; cannot row-click."
+            # )
             return False
 
         row = rows[row_index]
@@ -2005,7 +1565,7 @@ try {
                 clickable = None
 
         if not clickable:
-            print(f"[OPEN-BI] No clickable business link found in row for {label}.")
+            # print(f"[OPEN-BI] No clickable business link found in row for {label}.")
             return False
 
         clickable.click()
@@ -2014,7 +1574,7 @@ try {
         try:
             sb.wait_for_element("#divBusinessInformation", timeout=15)
             dismiss_any_alert(sb)
-            print(f"[OPEN-BI] Row-click succeeded for {label}.")
+            # print(f"[OPEN-BI] Row-click succeeded for {label}.")
             return True
         except Exception:
             if handle_cloudflare_if_present(
@@ -2023,25 +1583,30 @@ try {
                 try:
                     sb.wait_for_element("#divBusinessInformation", timeout=20)
                     dismiss_any_alert(sb)
-                    print(f"[OPEN-BI] Row-click + CF succeeded for {label}.")
+                    #  Row-click + CF succeeded for {label}.")
                     return True
                 except Exception:
-                    print(
-                        f"[OPEN-BI] #divBusinessInformation still not visible for {label} "
-                        f"after row-click + CF."
-                    )
+                    # print(
+                    #     f"[OPEN-BI] #divBusinessInformation still not visible for {label} "
+                    #     f"after row-click + CF."
+                    # )
+                    pass
             else:
-                print(
-                    f"[OPEN-BI] #divBusinessInformation not visible for {label} "
-                    f"after row-click."
-                )
+                # print(
+                #     f"[OPEN-BI] #divBusinessInformation not visible for {label} "
+                #     f"after row-click."
+                # )
+                pass
     except Exception as e:
-        print(f"[OPEN-BI] Error during row-click fallback for {label}: {e}")
+        # print(f"[OPEN-BI] Error during row-click fallback for {label}: {e}")
+        pass
 
     return False
 
 def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keyword: bool):
     print(f"\n[===] SCRAPING keyword '{keyword}' (letter {letter}) [===]")
+
+    start_ts = time.time()
 
     # Make sure we're on the Advanced Search page
     if not ensure_advanced_search(sb):
@@ -2087,7 +1652,7 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             break
 
         except Exception as e:
-            print(f"[WARN] Form fill failed on attempt {attempt}/3 for keyword '{keyword}': {e}")
+            # print(f"[WARN] Form fill failed on attempt {attempt}/3 for keyword '{keyword}': {e}")
             if attempt >= 3:
                 print(f"[ERROR] Giving up on keyword '{keyword}' due to repeated form errors.")
                 return {
@@ -2123,13 +1688,15 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
 
     # --- AUTO-WAIT for first results table, NO input() ---
     if first_keyword:
-        print("[INFO] Waiting for the first results table to appear...")
-        print("[INFO] If a Cloudflare / Turnstile challenge appears, solve it in the browser; "
-              "this script will keep waiting.")
+        # print("[INFO] Waiting for the first results table to appear...")
+        # print("[INFO] If a Cloudflare / Turnstile challenge appears, solve it in the browser; "
+        #       "this script will keep waiting.")
+        pass
     try:
         sb.wait_for_element("css=table.table-striped", timeout=30)
     except Exception:
-        print("[WARN] table.table-striped not found after waiting; continuing anyway.")
+        # print("[WARN] table.table-striped not found after waiting; continuing anyway.")
+        pass
 
     # We’ll track stats per keyword
     keyword_rows = []
@@ -2170,7 +1737,7 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         # --- Save full HTML for this page for debugging ---
         debug_path = debug_dir / f"debug_{letter}_{safe_kw}_page_{page_index}.html"
         debug_path.write_text(html, encoding="utf-8")
-        print(f"[DEBUG] Saved {debug_path}")
+        # print(f"[DEBUG] Saved {debug_path}")
 
         # --- Parse rows from this page ---
         rows = parse_rows(html)
@@ -2184,22 +1751,22 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
                 html = sb.get_page_source()
                 debug_retry_path = debug_dir / f"debug_{letter}_{safe_kw}_page_{page_index}_retry_{retry}.html"
                 debug_retry_path.write_text(html, encoding="utf-8")
-                print(f"[DEBUG] Saved {debug_retry_path}")
+                # print(f"[DEBUG] Saved {debug_retry_path}")
                 rows = parse_rows(html)
                 if rows:
                     break
 
-        print(f"[DEBUG] parse_rows: found {len(rows)} rows")
-        print(f"[PAGE {page_index}] Extracted {len(rows)} rows for keyword '{keyword}'")
+        # print(f"[DEBUG] parse_rows: found {len(rows)} rows")
+        # print(f"[PAGE {page_index}] Extracted {len(rows)} rows for keyword '{keyword}'")
         keyword_rows.extend(rows)
         pages_info.append({"page": page_index, "rows_on_page": len(rows)})
 
         # --- Grab rich per-business objects via Angular's businessList ---
         business_list = get_business_list_via_angular(sb)
         if business_list:
-            print(
-                f"[API] Angular businessList has {len(business_list)} entries on this page."
-            )
+            # print(
+            #     f"[API] Angular businessList has {len(business_list)} entries on this page."
+            # )
             api_pages.append(
                 {
                     "page_index": page_index,
@@ -2235,9 +1802,9 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
                         "PDFSummaries": pdf_summaries,
                     }
                 except Exception as e:
-                    print(
-                        f"[PDF-PASS] Error while scraping PDFs for biz_id={biz_id}: {e}"
-                    )
+                    # print(
+                    #     f"[PDF-PASS] Error while scraping PDFs for biz_id={biz_id}: {e}"
+                    # )
                     # still record that we attempted PDFs
                     pdf_data_by_id.setdefault(
                         biz_id,
@@ -2252,6 +1819,15 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
 
                 if biz_id in visited_detail_ids:
                     continue  # already have BI for this biz_id
+
+                # --- Minimal per-business log ---
+                ubi = biz_obj.get("UBINumber") or biz_id
+                print(
+                    f"[SCRAPE] {letter}-{keyword} | "
+                    f"Page {page_index} | "
+                    f"Business {local_idx+1}/{len(business_list)} | "
+                    f"UBI={ubi}"
+                )
 
                 try:
                     rec = fetch_business_information_via_html(
@@ -2268,9 +1844,9 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
                         and page_index == 1,
                     )
                 except Exception as e:
-                    print(
-                        f"[DETAIL] Error in BI pass for biz_id={biz_id}: {e}"
-                    )
+                    # print(
+                    #     f"[DETAIL] Error in BI pass for biz_id={biz_id}: {e}"
+                    # )
                     rec = None
 
                 if rec:
@@ -2293,14 +1869,14 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         pager = parse_pager(html)
         retry_count = 0
         while not pager and retry_count < 5:
-            print("[WARN] No valid pager found (or placeholder 0-of-0). Retrying...")
+            # print("[WARN] No valid pager found (or placeholder 0-of-0). Retrying...")
             sb.sleep(2)
             html = sb.get_page_source()
             pager = parse_pager(html)
             retry_count += 1
 
         if not pager:
-            print(f"[ERROR] Still no valid pager after retries; stopping keyword '{keyword}'.")
+            # print(f"[ERROR] Still no valid pager after retries; stopping keyword '{keyword}'.")
             break
 
         current_page = pager["page"]
@@ -2311,7 +1887,7 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
 
         # If this is the last page, stop
         if current_page >= total_pages:
-            print(f"[INFO] Keyword '{keyword}': reached last page; stopping.")
+            # print(f"[INFO] Keyword '{keyword}': reached last page; stopping.")
             break
 
         next_page = current_page + 1
@@ -2323,12 +1899,14 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             moved = click_page_number_js(sb, next_page)
 
         if not moved:
-            print(f"[INFO] Keyword '{keyword}': could not move to page {next_page}; stopping.")
+            # print(f"[INFO] Keyword '{keyword}': could not move to page {next_page}; stopping.")
             break
 
         # Give time for new page to load
         sb.sleep(3)
         page_index += 1
+
+    
 
     # --- Save details records for this keyword (if any) ---
     details_path = None
@@ -2337,10 +1915,10 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         details_path = details_dir / f"wa_bi_{letter}_{safe_kw}.json"
         with details_path.open("w", encoding="utf-8") as f:
             json.dump(html_details_records, f, indent=2)
-        print(
-            f"[DETAIL] Saved {len(html_details_records)} BusinessInformation HTML records "
-            f"for keyword '{keyword}' to {details_path}"
-        )
+        # print(
+        #     f"[DETAIL] Saved {len(html_details_records)} BusinessInformation HTML records "
+        #    f"for keyword '{keyword}' to {details_path}"
+        # )
 
     # --- Save Angular/API-like businessList for this keyword (if any) ---
     api_path = None
@@ -2364,8 +1942,20 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
             f"({api_total_records} records) to {api_path}"
         )
 
+    duration_sec = time.time() - start_ts
+
+    # PDF success = businesses with at least 1 PDFSummary
+    pdf_success = 0
+    for rec in html_details_records:
+        pdfs = rec.get("PDFSummaries") or []
+        if pdfs:
+            pdf_success += 1
+
+    pdf_fail = max(0, details_success - pdf_success)
+
     # Build result structure for this keyword
     keyword_result = {
+        "letter": letter,
         "keyword": keyword,
         "pages_visited": page_index,
         "records_scraped": len(keyword_rows),
@@ -2376,13 +1966,17 @@ def scrape_keyword(sb: SB, keyword: str, letter: str, out_dir: Path, first_keywo
         "details_failed": details_failed,
         "api_file": str(api_path) if api_path else None,
         "api_records": api_total_records,
+        "pdf_success": pdf_success,
+        "pdf_fail": pdf_fail,
+        "duration_sec": round(duration_sec, 2)
     }
 
     print(
-        f"[SUMMARY] Keyword '{keyword}': pages_visited={page_index}, "
+        f"[SUMMARY] Keyword '{keyword}' (letter {letter}): pages_visited={page_index}, "
         f"records_scraped={len(keyword_rows)}, "
+        f"duration={round(duration_sec, 2)} seconds, "
         f"details_success={details_success}, details_failed={details_failed}, "
-        f"api_records={api_total_records}"
+        f"api_records={api_total_records}, pdf_ok={pdf_success}, pdf_fail={pdf_fail}"
     )
 
     return keyword_result
@@ -2423,7 +2017,7 @@ def scrape_filing_history_and_pdfs(
         return filings, pdf_summaries
 
     # Give you time to solve any Cloudflare / Turnstile on this tab
-    print("[FILING] Waiting 10 seconds for Cloudflare / Filing History to load...")
+    # print("[FILING] Waiting 10 seconds for Cloudflare / Filing History to load...")
     sb.sleep(10)
 
     # 2) Capture Filing History HTML and parse table
@@ -2448,7 +2042,8 @@ def scrape_filing_history_and_pdfs(
             },
         )
     except Exception as e:
-        print(f"[PDF] Warning: could not set Chrome download path: {e}")
+        # print(f"[PDF] Warning: could not set Chrome download path: {e}")
+        pass
 
     if not filings:
         # No filing rows; caller will still call click_back_with_cf()
@@ -2503,12 +2098,13 @@ return true;
             ok = sb.execute_script(js_open_modal, idx)
             if ok:
                 clicked = True
-                print(f"[PDF] Opened View Documents modal for filing {filing_no} via row index {idx}")
+                # print(f"[PDF] Opened View Documents modal for filing {filing_no} via row index {idx}")
         except Exception as e:
-            print(f"[PDF] JS error opening modal for filing {filing_no}: {e}")
+            # print(f"[PDF] JS error opening modal for filing {filing_no}: {e}")
+            pass
 
         if not clicked:
-            print(f"[PDF] Could not open 'View Documents' modal for filing {filing_no}.")
+            # print(f"[PDF] Could not open 'View Documents' modal for filing {filing_no}.")
             continue
 
         # 3b) Wait for the "View Documents" modal to appear and be visible
@@ -2523,7 +2119,7 @@ return true;
             time.sleep(1)
 
         if not modal or not modal.is_displayed():
-            print(f"[PDF] View Documents modal did not become visible for filing {filing_no}")
+            # print(f"[PDF] View Documents modal did not become visible for filing {filing_no}")
             close_view_documents_modal(sb, timeout=2)
             continue
 
@@ -2554,35 +2150,50 @@ return false;
 
             ok2 = sb.execute_script(js_click_fulfilled)
             if not ok2:
-                print(f"[PDF] No 'FULFILLED' document found in modal for filing {filing_no}")
+                # print(f"[PDF] No 'FULFILLED' document found in modal for filing {filing_no}")
                 close_view_documents_modal(sb, timeout=2)
                 continue
 
-            print(f"[PDF] Clicked paper icon for 'FULFILLED' document in modal for filing {filing_no}")
+            # print(f"[PDF] Clicked paper icon for 'FULFILLED' document in modal for filing {filing_no}")
         except Exception as e:
-            print(f"[PDF] Failed to click 'FULFILLED' paper icon for filing {filing_no}: {e}")
+            # print(f"[PDF] Failed to click 'FULFILLED' paper icon for filing {filing_no}: {e}")
             close_view_documents_modal(sb, timeout=2)
             continue
 
         # 3d) Wait for the new PDF to appear in download_dir
         new_pdf_path = wait_for_new_pdf(download_dir, before_files, timeout=60)
         if not new_pdf_path:
-            print(f"[PDF] No new PDF detected for filing {filing_no}")
+            # print(f"[PDF] No new PDF detected for filing {filing_no}")
             close_view_documents_modal(sb, timeout=2)
             continue
 
-        print(f"[PDF] Downloaded PDF: {new_pdf_path}")
+        # Give the OS a brief moment to finish writing the file
+        time.sleep(1.0)
+
+        # 3d-2) Validate that the new file is a real PDF (not HTML/error/truncated)
+        if not is_valid_pdf(new_pdf_path):
+            # print(f"[PDF] Invalid or corrupted PDF for filing {filing_no}: {new_pdf_path}")
+            # Optional: small extra wait and one more check in case write is still in progress
+            time.sleep(2.0)
+            if not is_valid_pdf(new_pdf_path):
+                # print(f"[PDF] Still invalid after re-check; skipping filing {filing_no}")
+                close_view_documents_modal(sb, timeout=2)
+                continue
+
+        # print(f"[PDF] Downloaded valid PDF: {new_pdf_path}")
 
         # 3e) Close modal right after PDF download (best effort)
         if not close_view_documents_modal(sb, timeout=5):
-            print("[PDF] Could not close modal after download (continuing anyway).")
+            # print("[PDF] Could not close modal after download (continuing anyway).")
+            pass
 
         # 3f) Move/copy to final target filename in pdf_root
         try:
             pdf_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(new_pdf_path, pdf_dest)
         except Exception as e:
-            print(f"[PDF] Warning: could not copy PDF to {pdf_dest}: {e}")
+            # print(f"[PDF] Warning: could not copy PDF to {pdf_dest}: {e}")
+            pass
 
         # Parse the PDF if it exists
         if pdf_dest.exists():
@@ -2602,364 +2213,532 @@ return false;
     # Leave caller on Filing History; click_back_with_cf() will do the navigation.
     return filings, pdf_summaries
 
-def scrape_filing_history_and_pdfs0(
-    sb,
+def run_single_keyword_worker(
     letter: str,
     keyword: str,
-    page_idx: int,
-    biz_index: int,
-    business_id: str,
-    out_dir: Path,
-    max_pdfs_per_business: int = 3,
-) -> tuple[list, list]:
+    proxy: str | None,
+    out_dir_str: str,
+    headless: bool,
+) -> tuple[str, dict, dict]:
     """
-    From the BusinessInformation view:
-      1. Click 'Filing History' tab.
-      2. Wait 10 seconds for manual Cloudflare solve.
-      3. Parse Filing History table.
-      4. For filings whose Document Type contains 'FULFILLED',
-         open 'View Documents', click the paper icon, download the PDF,
-         parse it, and store it in a per-business folder.
+    Run scraping for a single keyword in its own SB session (for parallel use).
 
     Returns:
-      filings: full filing table list[dict]
-      pdf_summaries: list[dict] with parsed PDF data for downloaded filings
-
-    NOTE:
-      This function leaves you on the Filing History tab (BI context),
-      then the caller uses click_back_with_cf() to go BI -> Search.
+      (keyword, result_dict, tracking_entry_dict)
     """
-    filings: list = []
-    pdf_summaries: list = []
 
-    # 1) Open the Filing History tab from BI
-    if not open_filing_history_tab(sb):
-        # We are still on BI; caller's click_back_with_cf() will work as before
-        return filings, pdf_summaries
-
-    # Give you time to solve any Cloudflare / Turnstile on this tab
-    print("[FILING] Waiting 10 seconds for Cloudflare / Filing History to load...")
-    sb.sleep(10)
-
-    # 2) Capture Filing History HTML and parse table
-    sb.wait_for_element_visible("table.table-striped", timeout=10)
-    html_filing = sb.get_page_source()
-    filings = parse_filing_history_table(html_filing)
-
-    # Prepare folder:
-    #   out_dir / 'pdf' / letter / keyword / 'page_{page_idx+1}' / 'bid_{business_id}'
-    pdf_root = out_dir / "pdf" / letter / keyword / f"page_{page_idx+1}" / f"bid_{business_id}"
-    pdf_root.mkdir(parents=True, exist_ok=True)
-
-    download_dir = pdf_root
-
-    # Set Chrome download path via CDP
+    # --- NEW: make sure per-worker dirs exist ---
     try:
-        sb.driver.execute_cdp_cmd(
-            "Page.setDownloadBehavior",
-            {
-                "behavior": "allow",
-                "downloadPath": str(download_dir),
-            },
-        )
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        DL_DIR.mkdir(parents=True, exist_ok=True)
+        ARCH_DIR.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        print(f"[PDF] Warning: could not set Chrome download path: {e}")
+        print(f"[WORKER-SETUP] Failed to create base dirs for keyword '{keyword}': {e}")
 
-    if not filings:
-        # No filing rows; caller will still call click_back_with_cf()
-        return filings, pdf_summaries
 
-    # 3) Download and parse up to max_pdfs_per_business
-    for idx, filing in enumerate(filings[:max_pdfs_per_business]):
-        filing_no = (filing.get("filing_number") or "").strip()
-        if not filing_no:
-            continue
+    out_dir = Path(out_dir_str)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        pdf_dest = pdf_root / f"{filing_no}.pdf"
+    ensure_log_dir()
 
-        # 3a) Open the "View Documents" modal for this filing row
-        clicked = False
-        try:
-            js_open_modal = r"""
-var tables = document.querySelectorAll("table.table-striped");
-if (!tables.length) return false;
+    print(f"[WORKER] Starting keyword='{keyword}' letter={letter} proxy={proxy}")
 
-// Find the Filing History table by header text
-var target = null;
-for (var t = 0; t < tables.length; t++) {
-    var hdr = tables[t].querySelector("thead");
-    if (!hdr) continue;
-    var hdrText = (hdr.textContent || "").toUpperCase();
-    if (hdrText.includes("FILING NUMBER") && hdrText.includes("FILING TYPE")) {
-        target = tables[t];
-        break;
-    }
-}
-if (!target) return false;
+    # Decide proxy in this worker (keep env fallback if proxy is None)
+    proxy_to_use = proxy
+    if proxy_to_use is None:
+        proxy_to_use = PROXY_URL
+        if proxy_to_use:
+            print(f"[WORKER] Using PROXY_URL from env: {proxy_to_use}")
+        else:
+            print("[WORKER] No proxy; running direct.")
 
-var rows = target.querySelectorAll("tbody tr");
-if (!rows.length) return false;
+    result: dict
 
-var idx = arguments[0];  // 0-based index
-if (idx >= rows.length) return false;
-var row = rows[idx];
+    with SB(
+        uc=True,
+        locale_code="en",
+        test=True,
+        browser="chrome",
+        headless=headless,
+        proxy=proxy_to_use,
+        proxy_bypass_list="127.0.0.1,localhost",
+    ) as sb:
+        sb.open(ADV_URL)
+        sb.sleep(8)
 
-// Assume last cell is the Action column
-var cells = row.querySelectorAll("td");
-if (!cells.length) return false;
-var action = cells[cells.length - 1];
+        # In this architecture, every worker's first keyword is "first_keyword=True"
+        result = scrape_keyword(
+            sb=sb,
+            keyword=keyword,
+            letter=letter,
+            out_dir=out_dir,
+            first_keyword=True,
+        )
 
-// Click the first clickable element in Action cell
-var clickable = action.querySelector("a, button, i, span[ng-click], i.fa, .fa-file-text-o");
-if (!clickable) return false;
-clickable.click();
-return true;
-"""
-            ok = sb.execute_script(js_open_modal, idx)
-            if ok:
-                clicked = True
-                print(f"[PDF] Opened View Documents modal for filing {filing_no} via row index {idx}")
-        except Exception as e:
-            print(f"[PDF] JS error opening modal for filing {filing_no}: {e}")
-
-        if not clicked:
-            print(f"[PDF] Could not open 'View Documents' modal for filing {filing_no}.")
-            continue
-
-        # 3b) Wait for the "View Documents" modal to appear and be visible
-        modal = None
-        for _ in range(45):  # up to ~45 seconds
-            try:
-                modal = sb.driver.find_element("css selector", ".modal-dialog")
-                if modal.is_displayed():
-                    break
-            except Exception:
-                pass
-            time.sleep(1)
-
-        if not modal or not modal.is_displayed():
-            print(f"[PDF] View Documents modal did not become visible for filing {filing_no}")
-            close_view_documents_modal(sb, timeout=2)
-            continue
-
-        # 3c) Inside the modal, try to click a 'FULFILLED' document first.
-        #     If none detected, fall back to clicking ANY paper icon in the modal.
-        try:
-            js_click_doc = r"""
-var modal = document.querySelector(".modal-dialog") || document.querySelector(".searchresult");
-if (!modal) return "NO_MODAL";
-
-var rows = modal.querySelectorAll("tbody tr");
-if (!rows.length) return "NO_ROWS";
-
-// --- Pass 1: look for rows whose text contains 'FULFILLED' ---
-for (var i = 0; i < rows.length; i++) {
-    var tds = rows[i].querySelectorAll("td");
-    if (!tds.length) continue;
-
-    var docText = "";
-    for (var j = 0; j < tds.length; j++) {
-        docText += " " + (tds[j].textContent || "");
-    }
-    docText = docText.toUpperCase();
-    if (!docText.includes("FULFILLED")) {
-        continue;
+    tracking_entry = {
+        "keyword": keyword,
+        "records_scraped": result.get("records_scraped", 0),
+        "details_file": result.get("details_file"),
+        "details_success": result.get("details_success", 0),
+        "details_failed": result.get("details_failed", 0),
+        "api_file": result.get("api_file"),
+        "api_records": result.get("api_records", 0),
     }
 
-    // Try to find a paper icon or link in this row
-    var icon = rows[i].querySelector("i.fa-file-text-o, i.fa-file-pdf, i.fa-file-pdf-o");
-    var anchor = null;
-    if (icon) {
-        anchor = icon.closest("a");
-    }
-    if (!anchor) {
-        anchor = rows[i].querySelector("a");
-    }
-    if (!anchor) {
-        continue;
-    }
+    print(f"[WORKER] Finished keyword='{keyword}' letter={letter}")
+    return keyword, result, tracking_entry
 
-    anchor.click();
-    return "FULFILLED_CLICKED";
-}
+def run_single_keyword_workerF1(
+    letter: str,
+    keyword: str,
+    proxy: str | None,
+    out_dir_str: str,
+    headless: bool,
+) -> tuple[str, dict, dict]:
+    """
+    Run scraping for a single keyword in its own SB session (for parallel use).
 
-// --- Pass 2 (fallback): click the first row that has any paper icon/link ---
-for (var i = 0; i < rows.length; i++) {
-    var icon = rows[i].querySelector("i.fa-file-text-o, i.fa-file-pdf, i.fa-file-pdf-o");
-    var anchor = null;
-    if (icon) {
-        anchor = icon.closest("a");
-    }
-    if (!anchor) {
-        anchor = rows[i].querySelector("a");
-    }
-    if (!anchor) {
-        continue;
-    }
+    Returns:
+      (keyword, result_dict, tracking_entry_dict)
+    """
+    import contextlib
+    from seleniumbase import SB
 
-    anchor.click();
-    return "FALLBACK_CLICKED";
-}
+    # --- NEW: make sure per-worker dirs exist ---
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        DL_DIR.mkdir(parents=True, exist_ok=True)
+        ARCH_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[WORKER-SETUP] Failed to create base dirs for keyword '{keyword}': {e}")
 
-return "NO_CLICK";
-"""
-            # Snapshot existing PDFs BEFORE triggering the download
-            before_files = set(download_dir.glob("*.pdf"))
+    out_dir = Path(out_dir_str)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-            result = sb.execute_script(js_click_doc)
-            if result == "FULFILLED_CLICKED":
-                print(
-                    f"[PDF] Clicked paper icon for 'FULFILLED' document "
-                    f"in modal for filing {filing_no}"
-                )
-            elif result == "FALLBACK_CLICKED":
-                print(
-                    f"[PDF] No explicit 'FULFILLED' text found; "
-                    f"clicked fallback document in modal for filing {filing_no}"
-                )
-            else:
-                print(
-                    f"[PDF] No 'FULFILLED' document or fallback paper icon found "
-                    f"in modal for filing {filing_no} (result={result})"
-                )
-                close_view_documents_modal(sb, timeout=2)
-                continue
-        except Exception as e:
-            print(
-                f"[PDF] Failed to click document in modal for filing {filing_no}: {e}"
+    ensure_log_dir()
+
+    print(f"[WORKER] Starting keyword='{keyword}' letter={letter} proxy={proxy}")
+
+    # Decide proxy in this worker (keep env fallback if proxy is None)
+    proxy_to_use = proxy
+    if proxy_to_use is None:
+        proxy_to_use = PROXY_URL
+        if proxy_to_use:
+            print(f"[WORKER] Using PROXY_URL from env: {proxy_to_use}")
+        else:
+            print("[WORKER] No proxy; running direct.")
+
+    result: dict = {}
+    sb = None
+
+    try:
+        # ⚠️ use explicit enter/exit so we can control cleanup in finally
+        sb = SB(
+            uc=True,
+            locale_code="en",
+            test=True,
+            browser="chrome",
+            headless=headless,
+            proxy=proxy_to_use,
+            proxy_bypass_list="127.0.0.1,localhost",
+        )
+        sb.__enter__()
+
+        sb.open(ADV_URL)
+        sb.sleep(8)
+
+        # In this architecture, every worker's first keyword is "first_keyword=True"
+        result = scrape_keyword(
+            sb=sb,
+            keyword=keyword,
+            letter=letter,
+            out_dir=out_dir,
+            first_keyword=True,
+        )
+
+        tracking_entry = {
+            "keyword": keyword,
+            "records_scraped": result.get("records_scraped", 0),
+            "details_file": result.get("details_file"),
+            "details_success": result.get("details_success", 0),
+            "details_failed": result.get("details_failed", 0),
+            "api_file": result.get("api_file"),
+            "api_records": result.get("api_records", 0),
+            "duration_sec": result.get("duration_sec"),
+            "pdf_success": result.get("pdf_success"),
+            "pdf_fail": result.get("pdf_fail"),
+        }
+
+        print(f"[WORKER] Finished keyword='{keyword}' letter={letter}")
+        return keyword, result, tracking_entry
+
+    except Exception as e:
+        print(f"[WORKER] ERROR while scraping keyword='{keyword}' letter={letter}: {e}")
+        # Let the caller (executor) handle adding an error tracking row
+        raise
+
+    finally:
+        # 🔻 HARD CLOSE: make *very* sure Chrome is gone in this worker
+        if sb is not None:
+            with contextlib.suppress(Exception):
+                sb.quit()
+            with contextlib.suppress(Exception):
+                driver = getattr(sb, "driver", None)
+                if driver:
+                    driver.quit()
+
+def run_keywords_with_buffer(
+    letter: str,
+    keyword_iter: Iterable[str],   # this can be a generator over J
+    proxies: list[str],            # or whatever you use
+    out_dir: str,
+    headless: bool,
+    max_workers: int = 2,          # K
+):
+    """
+    Run up to max_workers keywords in parallel at a time.
+    keyword_iter can be huge; we only keep up to max_workers in flight.
+    """
+
+    # If J is huge, it's better to turn it into an iterator (not a list)
+    kw_iter = iter(keyword_iter)
+
+    def get_proxy_for_kw(kw: str, idx: int) -> str:
+        # Example: round-robin proxy assignment. Replace with your logic.
+        return proxies[idx % len(proxies)] if proxies else None
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        future_to_kw = {}
+        next_index = 0  # counter for proxy assignment, logging, etc.
+
+        # 1) Prime the pool with up to K tasks
+        for _ in range(max_workers):
+            kw = next(kw_iter, None)
+            if kw is None:
+                break
+            proxy_for_kw = get_proxy_for_kw(kw, next_index)
+            fut = executor.submit(
+                run_single_keyword_worker,
+                letter,
+                kw,
+                proxy_for_kw,
+                out_dir,
+                headless,
             )
-            close_view_documents_modal(sb, timeout=2)
-            continue
+            future_to_kw[fut] = (kw, proxy_for_kw)
+            next_index += 1
 
-        # 3d) Wait for the new PDF to appear in download_dir
-        new_pdf_path = wait_for_new_pdf(download_dir, before_files, timeout=60)
-        if not new_pdf_path:
-            print(f"[PDF] No new PDF detected for filing {filing_no}")
-            # (Optional) you can still try to reuse an existing PDF on disk here.
-            close_view_documents_modal(sb, timeout=2)
-            continue
+        # 2) As tasks complete, refill slots from J
+        while future_to_kw:
+            done, _ = wait(list(future_to_kw.keys()), return_when=FIRST_COMPLETED)
 
-        print(f"[PDF] Downloaded PDF: {new_pdf_path}")        
+            for fut in done:
+                kw, proxy_for_kw = future_to_kw.pop(fut)
 
-        # 3e) Close modal right after PDF download (best effort)
-        if not close_view_documents_modal(sb, timeout=5):
-            print("[PDF] Could not close modal after download (continuing anyway).")
+                try:
+                    # Adapt this to your actual return structure:
+                    # e.g. worker returns (kw, result, tracking_entry)
+                    _, result, tracking_entry = fut.result()
+                    # 🔹 Save your results / tracking here
+                    # e.g., all_keywords_results.append(result)
+                    #       tracking_combined.append(tracking_entry)
+                except Exception as e:
+                    print(f"[RUN] ERROR in worker for keyword '{kw}' (proxy {proxy_for_kw}): {e}")
+                    # 🔹 append a failed tracking entry if you need to
 
-        # 3f) Move/copy to final target filename in pdf_root
-        try:
-            pdf_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(new_pdf_path, pdf_dest)
-        except Exception as e:
-            print(f"[PDF] Warning: could not copy PDF to {pdf_dest}: {e}")
+                # Refill this just-freed slot with the next keyword from J
+                next_kw = next(kw_iter, None)
+                if next_kw is not None:
+                    proxy_for_next_kw = get_proxy_for_kw(next_kw, next_index)
+                    new_fut = executor.submit(
+                        run_single_keyword_worker,
+                        letter,
+                        next_kw,
+                        proxy_for_next_kw,
+                        out_dir,
+                        headless,
+                    )
+                    future_to_kw[new_fut] = (next_kw, proxy_for_next_kw)
+                    next_index += 1
 
-        # Parse the PDF if it exists
-        if pdf_dest.exists():
-            pdf_info = parse_wa_filing_pdf(str(pdf_dest))
-            pdf_summary = {
-                "filing_number": filing_no,
-                "filing_type": filing.get("filing_type"),
-                "filing_date_time": filing.get("filing_date_time"),
-                "effective_date": filing.get("effective_date"),
-                "pdf_path": str(pdf_dest),
-                "phone": pdf_info.get("phone"),
-                "email": pdf_info.get("email"),
-                "executors": pdf_info.get("executors", []),
-            }
-            pdf_summaries.append(pdf_summary)
-
-    # Leave caller on Filing History; click_back_with_cf() will do the navigation.
-    return filings, pdf_summaries
-
-def run_letter(letter="A", out_dir="./output_wa_combined", headless=False):
+def run_letter(
+    letter: str = "A",
+    out_dir="./output_wa_combined",
+    headless: bool = False,
+    proxy: str | None = None,
+    proxy_list: list[str] | None = None,
+    batch_size: int = 5,
+):
     """
     Main entry to scrape all keywords for a given letter.
-    Loads keywords from search_keywords/<letter>.txt,
-    scrapes each one in a single browser session, and saves:
 
-    - wa_results_<LETTER>.json      (HTML table rows)
-    - wa_tracking_<LETTER>.json     (merged tracking per keyword)
-    - api/wa_api_<LETTER>_<KW>.json (per-keyword Angular data)
-    - bi_html/wa_bi_<LETTER>_<KW>.json (per-keyword BusinessInformation details)
+    Modes:
+      - If `proxy_list` is provided: use batch proxy assignment + parallel workers.
+      - Else if `proxy` is provided: use a single SB session with that proxy.
+      - Else: single SB session, direct (no proxy).
+
+    Output:
+      - wa_results_<LETTER>.json      (HTML table rows)
+      - wa_tracking_<LETTER>.json     (merged tracking per keyword)
+      - api/wa_api_<LETTER>_<KW>.json (per-keyword Angular data)
+      - bi_html/wa_bi_<LETTER>_<KW>.json (per-keyword BusinessInformation details)
     """
+
     letter = str(letter).upper()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    ensure_log_dir()
 
     keywords = load_keywords(letter)
     if not keywords:
         print("[ERROR] No keywords to scrape; exiting.")
         return
 
-    all_keywords_results = []
-    tracking_combined = []
+    all_keywords_results: list[dict] = []
+    tracking_combined: list[dict] = []
 
-    with SB(
-        uc=True,
-        headless=headless,
-        # If you want to use your Webshare proxy, uncomment the next line:
-        # proxy=PROXY_URL if PROXY_URL else None,
-    ) as sb:
-        sb.open(ADV_URL)
-        sb.sleep(2)
+    # ─────────────────────────────────────────────
+    # CASE 1: Proxy list provided → sliding-window parallel with buffet
+    # ─────────────────────────────────────────────
+    if proxy_list:
+        print(f"[INFO] Running letter {letter} with proxy list (buffer mode, max K={batch_size}).")
 
-        # Run through all keywords for this letter
-        for idx, keyword in enumerate(keywords, start=1):
-            first_keyword = idx == 1
+        all_proxies = list(proxy_list)
+        exc_path = Path(EXC_PROXY_FILE)
+        exc_path.touch(exist_ok=True)
+        excluded = load_excluded_proxies(exc_path)
+
+        # Load ALL keywords (J is huge)
+        kw_iter = iter(keywords)
+
+        # Sliding-window executor (K workers)
+        from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
+
+        def get_next_assignment():
+            """
+            Pull next keyword from kw_iter and assign proxy via assign_proxies_for_batch.
+            This ensures each keyword still gets a validated working proxy.
+            """
             try:
-                result = scrape_keyword(
-                    sb=sb,
-                    keyword=keyword,
-                    letter=letter,
-                    out_dir=out_dir,
-                    first_keyword=first_keyword,
-                )
-                all_keywords_results.append(result)
+                next_kw = next(kw_iter)
+            except StopIteration:
+                return None, None
 
-                # Combined tracking per keyword
-                tracking_combined.append(
-                    {
-                        "keyword": keyword,
-                        "records_scraped": result.get("records_scraped", 0),
-                        "details_file": result.get("details_file"),
-                        "details_success": result.get("details_success", 0),
-                        "details_failed": result.get("details_failed", 0),
-                        "api_file": result.get("api_file"),
-                        "api_records": result.get("api_records", 0),
-                    }
+            # Test & assign a single working proxy for this keyword
+            try:
+                assignments = assign_proxies_for_batch(
+                    all_proxies=all_proxies,
+                    excluded=excluded,
+                    keywords=[next_kw],
+                    batch_size=1,
+                    exc_file=exc_path,
+                    test_url=TEST_URL,
                 )
+            except RuntimeError as e:
+                print(f"[PROXY] ERROR assigning proxy for KW '{next_kw}': {e}")
+                return None, None
 
-            except Exception as e:
-                print(f"[ERROR] Exception while scraping keyword '{keyword}': {e}")
-                tracking_combined.append(
-                    {
-                        "keyword": keyword,
-                        "records_scraped": 0,
-                        "details_file": None,
-                        "details_success": 0,
-                        "details_failed": 0,
-                        "api_file": None,
-                        "api_records": 0,
-                        "error": str(e),
-                    }
+            proxy_for_kw = assignments[next_kw]
+            return next_kw, proxy_for_kw
+
+        # Start sliding window
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
+            future_to_kw = {}
+
+            # 1) Prime up to K workers
+            for _ in range(batch_size):
+                kw, px = get_next_assignment()
+                if kw is None:
+                    break
+                fut = executor.submit(
+                    run_single_keyword_worker,
+                    letter,
+                    kw,
+                    px,
+                    str(out_dir),
+                    headless,
                 )
+                future_to_kw[fut] = (kw, px)
 
-    # Build final letter-level result
+            # 2) Sliding window: refill whenever a worker finishes
+            while future_to_kw:
+                done, _ = wait(list(future_to_kw.keys()), return_when=FIRST_COMPLETED)
+
+                for fut in done:
+                    kw, px = future_to_kw.pop(fut)
+
+                    try:
+                        _, result, tracking_entry = fut.result()
+                        all_keywords_results.append(result)
+                        tracking_combined.append(tracking_entry)
+                    except Exception as e:
+                        print(f"[RUN] ERROR in KW '{kw}' (proxy={px}): {e}")
+                        tracking_combined.append({
+                            "keyword": kw,
+                            "records_scraped": 0,
+                            "details_file": None,
+                            "details_success": 0,
+                            "details_failed": 0,
+                            "api_file": None,
+                            "api_records": 0,
+                            "duration_sec": None,
+                            "pdf_success": 0,
+                            "pdf_fail": 0,
+                            "error": str(e),
+                        })
+
+                    # Refill slot with next keyword
+                    next_kw, next_px = get_next_assignment()
+                    if next_kw is not None:
+                        new_fut = executor.submit(
+                            run_single_keyword_worker,
+                            letter,
+                            next_kw,
+                            next_px,
+                            str(out_dir),
+                            headless,
+                        )
+                        future_to_kw[new_fut] = (next_kw, next_px)
+
+    # ─────────────────────────────────────────────
+    # CASE 2: Single proxy provided → one SB, sequential
+    # ─────────────────────────────────────────────
+    elif proxy is not None:
+        proxy_to_use = proxy
+        print(f"[PROXY] Using explicit single proxy: {proxy_to_use}")
+
+        with SB(
+            uc=True,
+            locale_code="en",
+            test=True,
+            browser="chrome",
+            headless=headless,
+            proxy=proxy_to_use,
+            proxy_bypass_list="127.0.0.1,localhost",
+        ) as sb:
+            sb.open(ADV_URL)
+            sb.sleep(8)
+
+            for idx, keyword in enumerate(keywords, start=1):
+                first_keyword = idx == 1
+                try:
+                    result = scrape_keyword(
+                        sb=sb,
+                        keyword=keyword,
+                        letter=letter,
+                        out_dir=out_dir,
+                        first_keyword=first_keyword,
+                    )
+                    all_keywords_results.append(result)
+                    tracking_combined.append(
+                        {
+                            "keyword": keyword,
+                            "records_scraped": result.get("records_scraped", 0),
+                            "details_file": result.get("details_file"),
+                            "details_success": result.get("details_success", 0),
+                            "details_failed": result.get("details_failed", 0),
+                            "api_file": result.get("api_file"),
+                            "api_records": result.get("api_records", 0),
+                            "duration_sec": result.get("duration_sec"),
+                            "pdf_success": result.get("pdf_success"),
+                            "pdf_fail": result.get("pdf_fail"),
+                        }
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Exception while scraping keyword '{keyword}': {e}")
+                    tracking_combined.append(
+                        {
+                            "keyword": keyword,
+                            "records_scraped": 0,
+                            "details_file": None,
+                            "details_success": 0,
+                            "details_failed": 0,
+                            "api_file": None,
+                            "api_records": 0,
+                            "duration_sec": None,
+                            "pdf_success": 0,
+                            "pdf_fail": 0,
+                            "error": str(e),
+                        }
+                    )
+
+    # ─────────────────────────────────────────────
+    # CASE 3: No proxy at all → one SB, sequential, direct
+    # ─────────────────────────────────────────────
+    else:
+        proxy_to_use = PROXY_URL
+        if proxy_to_use:
+            print(f"[PROXY] Using PROXY_URL from env: {proxy_to_use}")
+        else:
+            print("[PROXY] No proxy configured; running direct.")
+
+        with SB(
+            uc=True,
+            locale_code="en",
+            test=True,
+            browser="chrome",
+            headless=headless,
+            proxy=proxy_to_use if proxy_to_use else None,
+            proxy_bypass_list="127.0.0.1,localhost",
+        ) as sb:
+            sb.open(ADV_URL)
+            sb.sleep(8)
+
+            for idx, keyword in enumerate(keywords, start=1):
+                first_keyword = idx == 1
+                try:
+                    result = scrape_keyword(
+                        sb=sb,
+                        keyword=keyword,
+                        letter=letter,
+                        out_dir=out_dir,
+                        first_keyword=first_keyword,
+                    )
+                    all_keywords_results.append(result)
+                    tracking_combined.append(
+                        {
+                            "keyword": keyword,
+                            "records_scraped": result.get("records_scraped", 0),
+                            "details_file": result.get("details_file"),
+                            "details_success": result.get("details_success", 0),
+                            "details_failed": result.get("details_failed", 0),
+                            "api_file": result.get("api_file"),
+                            "api_records": result.get("api_records", 0),
+                        }
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Exception while scraping keyword '{keyword}': {e}")
+                    tracking_combined.append(
+                        {
+                            "keyword": keyword,
+                            "records_scraped": 0,
+                            "details_file": None,
+                            "details_success": 0,
+                            "details_failed": 0,
+                            "api_file": None,
+                            "api_records": 0,
+                            "error": str(e),
+                        }
+                    )
+
+    # ─────────────────────────────────────────────
+    # Save combined results for the letter
+    # ─────────────────────────────────────────────
     letter_result = {
         "letter": letter,
         "keywords": all_keywords_results,
     }
 
-    # Save result JSON per letter (HTML table scrape)
     results_path = out_dir / f"wa_results_{letter}.json"
     with results_path.open("w", encoding="utf-8") as f:
         json.dump(letter_result, f, indent=2)
 
-    # Save combined tracking JSON per letter
     combined_tracking_path = out_dir / f"wa_tracking_{letter}.json"
     with combined_tracking_path.open("w", encoding="utf-8") as f:
         json.dump(tracking_combined, f, indent=2)
 
-    total_records = sum(k["records_scraped"] for k in all_keywords_results)
+    total_records = sum(k.get("records_scraped", 0) for k in all_keywords_results)
     print(
         f"\n[DONE] Letter {letter}: scraped {len(all_keywords_results)} keywords, "
         f"total {total_records} records."
@@ -2971,12 +2750,65 @@ def run_letter(letter="A", out_dir="./output_wa_combined", headless=False):
 
 
 if __name__ == "__main__":
-    # Usage:
-    #   python3 wa_search_sb_local21.py A
-    # If no arg, defahtml_detail = sb.get_page_source()ult to 'A'
-    if len(sys.argv) > 1:
-        letter_arg = sys.argv[1]
-    else:
-        letter_arg = "A2"
+    parser = argparse.ArgumentParser(
+        description="WA CCFS scraper with optional proxy / proxy list support."
+    )
+    parser.add_argument(
+        "letter",
+        nargs="?",
+        default="A2",
+        help="Letter (or letter group) to scrape, e.g. A2",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default="output_wa_pdf_proxy",
+        help="Output directory (default: output_wa_pdf10)",
+    )
+    parser.add_argument(
+        "--proxy",
+        default=None,
+        help="Single proxy URL, e.g. http://127.0.0.1:9000",
+    )
+    parser.add_argument(
+        "--proxy-list-file",
+        default=None,
+        help="Path to text file containing proxy URLs, one per line.",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run Chrome in headless mode.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=5,
+        help="Number of keywords to run per proxy batch.",
+    )
 
-    run_letter(letter_arg, out_dir="./output_wa_pdf55", headless=False)
+
+    args = parser.parse_args()
+
+    # Load proxy list from file if provided
+    proxy_list: list[str] | None = None
+    if args.proxy_list_file:
+        proxy_list = load_proxies_from_file(args.proxy_list_file)
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    run_letter(
+        letter=args.letter.upper(),
+        out_dir=out_dir,
+        headless=args.headless,
+        proxy=args.proxy,
+        proxy_list=proxy_list,
+        batch_size=args.batch_size,
+    )
+
+'''
+python3.11 wa_search_sb_local_pdf_proxy4.py A4 \
+    --proxy-list-file local_proxies.txt \
+    --batch-size 3 \
+    --out-dir output_wa_pdf_proxy8
+'''
