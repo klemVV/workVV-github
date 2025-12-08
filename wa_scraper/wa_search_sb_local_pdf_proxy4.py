@@ -2807,8 +2807,9 @@ if __name__ == "__main__":
     )
 
 '''
-python3.11 wa_search_sb_local_pdf_proxy4.py A4 \
-    --proxy-list-file local_proxies.txt \
-    --batch-size 3 \
+python3.11 wa_search_sb_local_pdf_proxy4.py C \
+    --proxy-list-file local_proxies/proxies__part1.txt \
+    --batch-size 6 \
+    --headless \
     --out-dir output_wa_pdf_proxy8
 '''
